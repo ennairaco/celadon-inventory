@@ -575,7 +575,7 @@
     }
     if (view === 'history') setHistoryTab('personal');
     if (view === 'out') renderOut();
-    if (view === 'home') updateOutCount();
+    if (view === 'home') refreshHomeData();
     if (view === 'cart') renderCart();
     if (view === 'checkout') renderCheckout();
     if (view === 'catalog') loadInventory();
@@ -713,9 +713,11 @@
   }
 
   function setActingAs(value) {
+    const changed = value !== state.actingAs;
     state.actingAs = value || '';
     try { localStorage.setItem(ACTING_AS_KEY, state.actingAs); } catch(e) {}
     renderActForSelects();
+    if (changed) { dashState.selected.clear(); dashState.confirming = false; renderProjectDash(); }
   }
 
   function sameName(a, b) {
@@ -736,10 +738,12 @@
 
   function renderActForSelects() {
     const targets = allowedTargets();
+    const before = state.actingAs;
     if (!targets.some(t => t === state.actingAs)) {
       const ownDept = state.lastId && state.lastId.committee;
       state.actingAs = targets.find(t => sameName(t, ownDept)) || targets[0] || '';
     }
+    if (state.actingAs !== before && typeof renderProjectDash === 'function') renderProjectDash();
     const html = targets.length
       ? targets.map(t => `<option value="${escapeHtml(t)}"${t === state.actingAs ? ' selected' : ''}>${escapeHtml(t)}</option>`).join('')
       : '<option value="">Not linked to a department or project</option>';
@@ -763,22 +767,40 @@
     renderActForSelects();
   }
 
-  async function resolveLine(lineId, btn) {
+  // One resolve call to the backend. Throws with the server's message.
+  async function postResolve(lineId) {
     const url = getInventoryScriptUrl();
-    if (!url || !navigator.onLine) { showToast('You need to be online to mark items returned', true); return; }
+    const token = getInventoryToken();
+    const res = await fetch(url + '?action=resolve', {
+      method: 'POST',
+      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+      body: JSON.stringify(Object.assign({ idNumber: state.lastId.idNumber, lineId }, token ? { token } : {}))
+    });
+    const json = await res.json();
+    if (!json || !json.ok) throw new Error((json && json.error) || 'Could not mark returned');
+    return json;
+  }
+
+  function canReachBackend() {
+    if (getInventoryScriptUrl() && navigator.onLine) return true;
+    showToast('You need to be online to mark items returned', true);
+    return false;
+  }
+
+  function refreshAfterReturn() {
+    if (state.view === 'out') renderOut();
+    else if (state.view === 'history') renderHistory();
+    else if (state.view === 'home') refreshHomeData();
+    loadInventory();
+  }
+
+  async function resolveLine(lineId, btn) {
+    if (!canReachBackend()) return;
     if (btn) { btn.disabled = true; btn.textContent = 'Saving…'; }
     try {
-      const token = getInventoryToken();
-      const res = await fetch(url + '?action=resolve', {
-        method: 'POST',
-        headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-        body: JSON.stringify(Object.assign({ idNumber: state.lastId.idNumber, lineId }, token ? { token } : {}))
-      });
-      const json = await res.json();
-      if (!json || !json.ok) throw new Error((json && json.error) || 'Could not mark returned');
+      await postResolve(lineId);
       showToast('Marked returned');
-      if (state.view === 'out') renderOut(); else renderHistory();
-      loadInventory();
+      refreshAfterReturn();
     } catch(err) {
       showToast(err.message, true);
       if (btn) { btn.disabled = false; btn.textContent = 'Mark returned'; }
@@ -794,16 +816,148 @@
     return records.filter(r => r.caseType === 'BORROWING' && !r.resolved);
   }
 
-  async function updateOutCount() {
+  async function updateOutCount(records) {
     const sub = document.getElementById('out-sub');
     if (!sub) return;
-    const { records } = await fetchHistoryRecords();
+    if (!records) records = (await fetchHistoryRecords()).records;
     const pending = pendingBorrows(records);
     const overdue = pending.filter(r => r.overdue).length;
     sub.textContent = pending.length
       ? pending.length + (pending.length === 1 ? ' item' : ' items') + ' out' + (overdue ? ' · ' + overdue + ' overdue' : '')
       : 'Nothing is out right now';
     sub.classList.toggle('overdue', overdue > 0);
+  }
+
+  /* ---------------- Home dashboard: what the picked project still has out ----------------
+     Every pending borrow for the project/department picked on Home, however
+     old. Tick what came back, then confirm to mark them returned. Recently
+     returned items sit in a collapsed list underneath for reassurance. */
+  const RECENT_RETURN_DAYS = 30;
+
+  // A-yi drawings from ateneoceladon.com, one per department; projects, OP and
+  // General get the classic A-yi.
+  const AYI_BY_DEPT = { COMMPUB: 'commpub', CUL: 'cul', EXREL: 'exrel', FIN: 'fin', HR: 'hr', OSR: 'osr' };
+  function ayiFor(name) {
+    const code = Object.keys(AYI_BY_DEPT).find(d => sameName(d, name));
+    return 'brand/ayi/' + (code ? AYI_BY_DEPT[code] : 'ayi') + '.png';
+  }
+  const dashState = { selected: new Set(), confirming: false, busy: false, records: [], offline: false };
+
+  let homeLoadToken = 0;
+  async function refreshHomeData() {
+    const myToken = ++homeLoadToken;
+    const { records, offline } = await fetchHistoryRecords();
+    if (myToken !== homeLoadToken) return;
+    updateOutCount(records);
+    dashState.records = records;
+    dashState.offline = offline;
+    renderProjectDash();
+  }
+
+  function renderProjectDash() {
+    const box = document.getElementById('proj-dash');
+    if (!box) return;
+    const project = state.actingAs;
+    const heroAyi = document.getElementById('hero-ayi');
+    if (heroAyi) heroAyi.src = ayiFor(project);
+    if (!project || !state.lastId) { box.style.display = 'none'; return; }
+    box.style.display = '';
+
+    const borrows = dashState.records.filter(r => sameName(r.project, project) && r.caseType === 'BORROWING');
+    const out = borrows.filter(r => !r.resolved)
+      .sort((a, b) => (b.overdue - a.overdue) || String(a.due).localeCompare(String(b.due)));
+    // History has no "returned on" date, so "recent" is judged by when the item was borrowed.
+    const recentCutoff = Date.now() - RECENT_RETURN_DAYS * 86400000;
+    const returned = borrows.filter(r => r.resolved && r.time && new Date(r.time) >= recentCutoff);
+    const overdue = out.filter(r => r.overdue).length;
+    const dueSoon = out.filter(r => !r.overdue && r.due && new Date(r.due) - Date.now() < 3 * 86400000).length;
+
+    // Drop selections that are no longer pending (e.g. resolved elsewhere).
+    const outIds = new Set(out.map(r => r.lineId));
+    [...dashState.selected].forEach(id => { if (!outIds.has(id)) dashState.selected.delete(id); });
+
+    document.getElementById('proj-dash-title').textContent = project;
+    document.getElementById('proj-dash-sub').textContent = 'Still borrowed by this ' + (/^(OP|COMMPUB|CUL|EXREL|FIN|HR|OSR|General)$/.test(project) ? 'department' : 'project') + ' and not yet returned';
+    document.getElementById('proj-dash-stats').innerHTML = [
+      ['Not returned', out.length, out.length ? 'warn' : ''],
+      ['Overdue', overdue, overdue ? 'danger' : ''],
+      ['Due in 3 days', dueSoon, dueSoon ? 'warn' : '']
+    ].map(([label, n, tone]) => `<div class="dash-stat ${tone}"><div class="dash-stat-n">${n}</div><div class="dash-stat-l">${label}</div></div>`).join('');
+
+    const offlineNote = dashState.offline ? '<div class="history-offline-note">Offline: showing the last synced data. Returns need a connection.</div>' : '';
+    const outRows = out.map(r => `
+      <label class="dash-row${r.overdue ? ' is-overdue' : ''}">
+        <input type="checkbox" class="dash-check" data-line="${escapeHtml(r.lineId)}" ${dashState.selected.has(r.lineId) ? 'checked' : ''} ${dashState.offline || dashState.busy ? 'disabled' : ''}>
+        <span class="dash-row-main">
+          <span class="dash-row-title">${escapeHtml(r.item)}${r.qty ? ' × ' + escapeHtml(r.qty) : ''}</span>
+          <span class="dash-row-meta">${escapeHtml(r.name || '—')} · ${shortDate(r.time)}${r.committee ? ' · ' + escapeHtml(r.committee) : ''}</span>
+        </span>
+        <span class="dash-row-due${r.overdue ? ' overdue' : ''}">${r.overdue ? 'Overdue' : (r.due ? 'Due ' + shortDate(r.due) : '')}</span>
+      </label>`).join('');
+    const doneRows = returned.map(r => `
+      <div class="dash-row done">
+        <span class="dash-done-mark" aria-hidden="true">✓</span>
+        <span class="dash-row-main">
+          <span class="dash-row-title">${escapeHtml(r.item)}${r.qty ? ' × ' + escapeHtml(r.qty) : ''}</span>
+          <span class="dash-row-meta">Borrowed by ${escapeHtml(r.name || '—')} · ${shortDate(r.time)}${r.resolvedBy ? ' · returned by ' + escapeHtml(r.resolvedBy) : ''}</span>
+        </span>
+      </div>`).join('');
+
+    document.getElementById('proj-dash-list').innerHTML = offlineNote +
+      (out.length ? outRows : `<div class="dash-empty"><img src="${ayiFor(project)}" alt=""><div>All clear! ${escapeHtml(project)} has nothing out right now.</div></div>`) +
+      (returned.length ? `<details class="dash-done"><summary>Recently returned (${returned.length})</summary>${doneRows}</details>` : '');
+
+    document.querySelectorAll('#proj-dash-list .dash-check').forEach(cb => {
+      cb.addEventListener('change', () => {
+        if (cb.checked) dashState.selected.add(cb.dataset.line); else dashState.selected.delete(cb.dataset.line);
+        dashState.confirming = false;
+        renderDashActions(out);
+      });
+    });
+    renderDashActions(out);
+  }
+
+  function renderDashActions(out) {
+    const actions = document.getElementById('proj-dash-actions');
+    if (!actions) return;
+    const n = dashState.selected.size;
+    if (!out.length) { actions.innerHTML = ''; return; }
+    if (dashState.confirming && n) {
+      const names = out.filter(r => dashState.selected.has(r.lineId)).map(r => escapeHtml(r.item) + (r.qty ? ' × ' + escapeHtml(r.qty) : ''));
+      actions.innerHTML = `
+        <div class="dash-confirm" role="alertdialog" aria-label="Confirm return">
+          <div class="dash-confirm-q">Are these back in the org room?</div>
+          <div class="dash-confirm-list">${names.join('<br>')}</div>
+          <div class="dash-confirm-btns">
+            <button type="button" class="btn-secondary" id="dash-cancel">Not yet</button>
+            <button type="button" class="btn-primary" id="dash-yes">Yes, mark ${n} returned</button>
+          </div>
+        </div>`;
+      document.getElementById('dash-cancel').addEventListener('click', () => { dashState.confirming = false; renderDashActions(out); });
+      document.getElementById('dash-yes').addEventListener('click', () => confirmDashReturn(out));
+      return;
+    }
+    actions.innerHTML = `<button type="button" class="btn-primary dash-return-btn" id="dash-return" ${n && !dashState.busy ? '' : 'disabled'}>${n ? 'Confirm return (' + n + ')' : 'Tick items that came back'}</button>`;
+    document.getElementById('dash-return').addEventListener('click', () => { dashState.confirming = true; renderDashActions(out); });
+  }
+
+  async function confirmDashReturn(out) {
+    if (!canReachBackend()) return;
+    const ids = out.map(r => r.lineId).filter(id => dashState.selected.has(id));
+    dashState.busy = true;
+    dashState.confirming = false;
+    const actions = document.getElementById('proj-dash-actions');
+    let done = 0;
+    const failed = [];
+    for (const id of ids) {
+      if (actions) actions.innerHTML = `<div class="dash-progress">Marking returned… ${done + 1} of ${ids.length}</div>`;
+      try { await postResolve(id); done++; dashState.selected.delete(id); }
+      catch(err) { failed.push(err.message); }
+    }
+    dashState.busy = false;
+    if (failed.length) showToast(`${done} marked returned, ${failed.length} failed: ${failed[0]}`, true);
+    else showToast(done === 1 ? 'Marked returned' : done + ' items marked returned');
+    refreshAfterReturn();
   }
 
   let outLoadToken = 0;
@@ -1227,20 +1381,20 @@
       container.className = 'item-grid';
       container.innerHTML = debugHtml + visible.map(item => `
         <div class="item-card" onclick="addToCart('${escapeAttr(item.id)}')">
-          <div class="item-thumb">${locationTag(item.location)}</div>
+          <div class="item-card-top"><span class="item-cat">${escapeHtml(item.category)}</span>${cartQty(item.id) > 0 ? `<span class="in-cart-dot">${cartQty(item.id)}</span>` : ''}</div>
           <div class="item-title">${escapeHtml(item.title)}</div>
-          <div class="item-cat">${escapeHtml(item.category)}</div>
           <div class="item-qty">${escapeHtml(item.qtyDisplay != null ? item.qtyDisplay : item.qtyAvailable)}${itemBadges(item)}</div>
+          ${locationLine(item.location)}
         </div>
       `).join('');
     } else {
       container.className = 'item-list';
       container.innerHTML = debugHtml + visible.map(item => `
         <div class="item-row" onclick="addToCart('${escapeAttr(item.id)}')">
-          <div class="item-thumb">${locationTag(item.location)}</div>
           <div class="item-info">
             <div class="item-title">${escapeHtml(item.title)}${itemBadges(item)}</div>
-            <div class="item-qty">${escapeHtml(item.category)} · ${escapeHtml(item.qtyDisplay || '—')}${item.notes ? ' · ' + escapeHtml(item.notes) : ''}</div>
+            <div class="item-qty"><span class="item-cat">${escapeHtml(item.category)}</span> · ${escapeHtml(item.qtyDisplay || '—')}${item.notes ? ' · ' + escapeHtml(item.notes) : ''}</div>
+            ${locationLine(item.location)}
           </div>
           ${cartQty(item.id) > 0 ? `<div class="in-cart-badge">${cartQty(item.id)} in cart</div>` : ''}
         </div>
@@ -1342,10 +1496,10 @@
 
     container.innerHTML = entries.map(({ item, qty }) => `
       <div class="item-row">
-        <div class="item-thumb">${locationTag(item.location)}</div>
         <div class="item-info">
           <div class="item-title">${escapeHtml(item.title)}</div>
-          <div class="item-qty">${item.notes ? escapeHtml(item.notes) : '<span style="opacity:0.5">No notes</span>'}</div>
+          <div class="item-qty"><span class="item-cat">${escapeHtml(item.category)}</span> · ${escapeHtml(item.qtyDisplay || '—')}</div>
+          ${locationLine(item.location)}
         </div>
         <div class="qty-stepper">
           <button class="qty-btn" onclick="stepQty('${escapeAttr(item.id)}', -1)" aria-label="Decrease quantity"><img class="svg-icon" src="icons/ui/minus.svg" alt=""></button>
@@ -1626,10 +1780,11 @@
     return LOCATION_PALETTE[hash % LOCATION_PALETTE.length];
   }
 
-  function locationTag(location) {
-    const text = location && location.trim() ? location.trim() : 'Unassigned';
-    const color = locationColor(location);
-    return `<div class="loc-tag" style="background:${color}" title="${escapeAttr(text)}">${escapeHtml(text)}</div>`;
+  // Where an item lives: a quiet line with a colour dot, so the item name
+  // stays the focus of each card.
+  function locationLine(location) {
+    const text = location && location.trim() ? location.trim() : 'Location not recorded';
+    return `<div class="item-loc" title="${escapeAttr(text)}"><span class="loc-dot" style="background:${locationColor(location)}"></span>${escapeHtml(text)}</div>`;
   }
 
   function escapeHtml(str) {

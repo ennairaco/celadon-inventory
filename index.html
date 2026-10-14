@@ -5,17 +5,17 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, user-scalable=no">
 <title>Celadon Inventory</title>
 <link rel="manifest" href="manifest.json">
-<meta name="theme-color" content="#001a45">
+<meta name="theme-color" content="#ffffff">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-capable" content="yes">
-<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
 <meta name="apple-mobile-web-app-title" content="CelaCart">
 <link rel="icon" type="image/png" sizes="32x32" href="icons/favicon-32.png">
 <link rel="icon" type="image/png" sizes="64x64" href="icons/favicon-64.png">
 <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Montserrat:ital,wght@0,400;0,500;0,600;0,700;0,800;1,600&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="inventory.css?v=6">
+<link rel="stylesheet" href="inventory.css?v=8">
 </head>
 <body>
 <div class="desktop-frame">
@@ -47,10 +47,11 @@
     <section class="view active" id="view-login">
       <div class="login-wrap">
         <div class="login-logo">
-          <img class="login-mark" src="brand/dreagle-mark-white.png" alt="Ateneo Celadon">
+          <img class="login-mark" src="brand/dreagle-mark.png" alt="Ateneo Celadon">
         </div>
         <div class="login-tagline">Org room inventory</div>
-        <div class="id-input-label" style="margin-top:44px;">ATENEO ID NUMBER</div>
+        <img class="login-ayi" src="brand/ayi/ayi.png" alt="">
+        <div class="id-input-label" style="margin-top:22px;">ATENEO ID NUMBER</div>
         <div class="id-input-row" style="max-width:320px;width:100%;">
           <input type="text" inputmode="numeric" id="login-id-input" placeholder="e.g. 212345" maxlength="6"
             style="text-align:center;flex:1 1 100%;" autocomplete="off" spellcheck="false" />
@@ -63,18 +64,34 @@
     <!-- ===================== View: Home ===================== -->
     <section class="view" id="view-home">
       <div class="top-brand">
-        <img class="top-brand-mark" src="brand/dreagle-mark-white.png" alt="Ateneo Celadon">
+        <img class="top-brand-mark" src="brand/dreagle-mark.png" alt="Ateneo Celadon">
       </div>
-      <div class="identity-block">
-        <div class="identity-id" id="home-identity-id">—</div>
-        <div class="identity-name" id="home-identity-name">—</div>
+      <div class="home-hero">
+        <img class="hero-ayi" id="hero-ayi" src="brand/ayi/ayi.png" alt="">
+        <div class="hero-eyebrow">Org room inventory</div>
+        <div class="identity-block">
+          <div class="identity-id" id="home-identity-id">—</div>
+          <div class="identity-name" id="home-identity-name">—</div>
+        </div>
+        <div class="actfor-block">
+          <label class="id-input-label actfor-label" for="home-actfor-select">BORROWING / USING FOR</label>
+          <select id="home-actfor-select" class="actfor-select" aria-label="Project or department you're borrowing or using items for"></select>
+          <div class="actfor-note" id="actfor-empty-note" style="display:none;">Couldn't load the project list. Check your connection and reopen the app.</div>
+        </div>
       </div>
 
-      <div class="actfor-block">
-        <label class="id-input-label actfor-label" for="home-actfor-select">BORROWING / USING FOR</label>
-        <select id="home-actfor-select" class="actfor-select" aria-label="Project or department you're borrowing or using items for"></select>
-        <div class="actfor-note" id="actfor-empty-note" style="display:none;">Couldn't load the project list. Check your connection and reopen the app.</div>
-      </div>
+      <!-- Everything still out for the project/department picked above -->
+      <section class="proj-dash" id="proj-dash" style="display:none;" aria-labelledby="proj-dash-title">
+        <div class="proj-dash-head">
+          <div>
+            <div class="proj-dash-title" id="proj-dash-title"></div>
+            <div class="proj-dash-sub" id="proj-dash-sub"></div>
+          </div>
+        </div>
+        <div class="proj-dash-stats" id="proj-dash-stats"></div>
+        <div class="proj-dash-list" id="proj-dash-list"></div>
+        <div class="proj-dash-actions" id="proj-dash-actions"></div>
+      </section>
 
       <div class="home-nav-list">
         <div class="home-nav-card" id="home-nav-inventory" role="button" tabindex="0">
@@ -107,7 +124,7 @@
     <!-- ===================== View: Settings ===================== -->
     <section class="view" id="view-settings">
       <div class="top-brand">
-        <img class="top-brand-mark" src="brand/dreagle-mark-white.png" alt="Ateneo Celadon">
+        <img class="top-brand-mark" src="brand/dreagle-mark.png" alt="Ateneo Celadon">
       </div>
       <div class="identity-block">
         <div class="identity-id" id="settings-identity-id">—</div>
@@ -145,7 +162,7 @@
     <!-- ===================== View: Help ===================== -->
     <section class="view" id="view-help">
       <div class="top-brand">
-        <img class="top-brand-mark" src="brand/dreagle-mark-white.png" alt="Ateneo Celadon">
+        <img class="top-brand-mark" src="brand/dreagle-mark.png" alt="Ateneo Celadon">
       </div>
       <div class="identity-block">
         <div class="identity-id" id="help-identity-id">—</div>
@@ -161,7 +178,7 @@
     <!-- ===================== View: History ===================== -->
     <section class="view" id="view-history">
       <div class="top-brand">
-        <img class="top-brand-mark" src="brand/dreagle-mark-white.png" alt="Ateneo Celadon">
+        <img class="top-brand-mark" src="brand/dreagle-mark.png" alt="Ateneo Celadon">
       </div>
       <div class="identity-block">
         <div class="identity-id" id="history-identity-id">—</div>
@@ -189,7 +206,7 @@
     <!-- ===================== View: Borrowed now ===================== -->
     <section class="view" id="view-out">
       <div class="top-brand">
-        <img class="top-brand-mark" src="brand/dreagle-mark-white.png" alt="Ateneo Celadon">
+        <img class="top-brand-mark" src="brand/dreagle-mark.png" alt="Ateneo Celadon">
       </div>
       <div class="history-head">
         <div class="history-title">Borrowed now</div>
@@ -268,7 +285,7 @@
   <!-- ===================== Bottom Nav (Catalog / Cart / Checkout) ===================== -->
   <nav class="bottom-nav" id="bottom-nav">
     <div class="sidebar-brand">
-      <img class="sidebar-brand-mark" src="brand/dreagle-mark-white.png" alt="Ateneo Celadon">
+      <img class="sidebar-brand-mark" src="brand/dreagle-mark.png" alt="Ateneo Celadon">
     </div>
     <div class="bottom-nav-inner">
       <div class="nav-btn" data-view="home" role="button" tabindex="0"><span class="nav-emoji"><img class="svg-icon nav-svg-icon" src="icons/ui/home.svg" alt=""></span>Home</div>
@@ -282,7 +299,7 @@
   <!-- ===================== Bottom Nav (Home / Settings / Help) ===================== -->
   <nav class="bottom-nav" id="bottom-nav-main">
     <div class="sidebar-brand">
-      <img class="sidebar-brand-mark" src="brand/dreagle-mark-white.png" alt="Ateneo Celadon">
+      <img class="sidebar-brand-mark" src="brand/dreagle-mark.png" alt="Ateneo Celadon">
     </div>
     <div class="bottom-nav-inner">
       <div class="nav-btn" data-mainview="home" role="button" tabindex="0"><span class="nav-emoji"><img class="svg-icon nav-svg-icon" src="icons/ui/home.svg" alt=""></span>Home</div>
@@ -327,6 +344,6 @@
   </div>
 
 </div>
-<script src="inventory.js?v=9"></script>
+<script src="inventory.js?v=11"></script>
 </body>
 </html>
