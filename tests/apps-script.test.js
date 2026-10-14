@@ -98,7 +98,8 @@ const g = {
   SpreadsheetApp: chain({ getActiveSpreadsheet: () => ss, getUi: () => { throw new Error('no ui'); } }),
   PropertiesService: { getScriptProperties: () => ({ getProperty: k => props[k] || null }) },
   LockService: { getScriptLock: () => ({ waitLock() {}, releaseLock() {} }) },
-  Utilities: { formatDate: () => 'x' },
+  Utilities: { formatDate: () => 'x', getUuid: () => Math.random().toString(16).slice(2) + Date.now().toString(16) },
+  CacheService: { getScriptCache: () => ({ get: () => null, put() {}, remove() {} }) },
   Session: { getScriptTimeZone: () => 'Asia/Manila' },
   ContentService: { createTextOutput: t => ({ setMimeType: () => JSON.parse(t) }), MimeType: { JSON: 1 } },
   MailApp: { sendEmail: m => mail.push(m) },
@@ -185,9 +186,10 @@ assert.strictEqual(invRow('Tripods', 'COMMPUB')[QTY], tripodsBefore + 3);
 assert.strictEqual(invRow('Pushpins', 'COMMPUB')[QTY], '*');
 
 // Add-item form options come from the Inventory tab's dropdowns
-sheets.Inventory.validation = { 6: ['General', 'OP', 'COMMPUB', 'CUL'], 9: ['Metal Drawer (Top)', 'Shelf'] };
+sheets.Inventory.validation = { 3: ['Office Supplies', 'Art & Craft Supplies', 'Toiletries & Hygiene'], 6: ['General', 'OP', 'COMMPUB', 'CUL', 'HR'],
+  7: ['Supplies', 'Equipment'], 9: ['Metal Drawer (Top)', 'Shelf'] };
 const opts = get({ action: 'options' }).options;
-assert.deepStrictEqual(opts.departments, ['General', 'OP', 'COMMPUB', 'CUL']);
+assert.deepStrictEqual(opts.departments, ['General', 'OP', 'COMMPUB', 'CUL', 'HR']);
 assert.deepStrictEqual(opts.storageAreas, ['Metal Drawer (Top)', 'Shelf']);
 
 // Add a new item → appended right after the last item row, In Storage, listed, logged
@@ -202,19 +204,41 @@ assert.ok(get({ action: 'inventory' }).items.some(i => i.title === 'Glitter Glue
 assert.ok(requests().some(x => x[col('Case')] === 'ADDING' && x[col('Item')] === 'Glitter Glue' && x[col('Name')] === 'Maria Santos'));
 
 // Duplicates refused; bad qty refused; non-members refused
-assert.match(post('addItem', { idNumber: '212346', title: 'glitter glue', qty: '1', department: 'CUL', storage: 'Shelf', spot: 'CUL Bag 1' }).error, /already in the inventory/);
-assert.match(post('addItem', { idNumber: '212346', title: 'Tape', qty: 'two', department: 'CUL' }).error, /whole number/);
-assert.match(post('addItem', { idNumber: '000001', title: 'Tape', qty: '2', department: 'CUL' }).error, /not in the member list/);
-assert.match(post('addItem', { idNumber: '212346', title: 'Tape', qty: '2' }).error, /department/);
+const base = { idNumber: '212346', title: 'Tape', qty: '2', department: 'CUL', type: 'Office Supplies', category: 'Supplies', storage: 'Shelf' };
+const add = extra => post('addItem', Object.assign({}, base, extra));
+assert.match(add({ title: 'glitter glue', qty: '1', type: 'Art & Craft Supplies', spot: 'CUL Bag 1' }).error, /already in the inventory/);
+assert.match(add({ qty: 'two' }).error, /whole number/);
+assert.match(add({ qty: '0' }).error, /between 1 and/);
+assert.match(add({ qty: '99999' }).error, /whole number|between/);
+assert.match(add({ idNumber: '000001' }).error, /not in the member list/);
+assert.match(add({ department: '' }).error, /department/);
+assert.match(add({ department: 'Made Up Dept' }).error, /not one of the department options/);
+assert.match(add({ type: '' }).error, /type/);
+assert.match(add({ category: 'Weird' }).error, /not one of the category options/);
+assert.match(add({ title: 'x' }).error, /at least 2/);
+assert.match(add({ title: '=IMPORTRANGE("x")' }).error, /can't start with/);
+assert.match(add({ unit: '<b>' }).error, /Unit should be/);
+assert.match(add({ storage: '', spot: '' }).error, /storage area or a specific spot/);
+assert.match(add({ expiry: '1999-01-01' }).error, /Check the year/);
+// Formula-looking notes/spots are stored as plain text
+r = add({ title: 'Glue Sticks', notes: '=HYPERLINK("http://x")', spot: '+ box 2' });
+assert.ok(r.ok, JSON.stringify(r));
+const glueRow = sheets.Inventory.data[r.row - 1];
+assert.strictEqual(glueRow[INV_HEAD.indexOf('Notes')], "'=HYPERLINK(\"http://x\")");
+assert.strictEqual(glueRow[INV_HEAD.indexOf('Specific Spot')], "'+ box 2");
+// A brand-new storage area is accepted and joins the dropdown
+r = add({ title: 'Banner Stand', type: 'Office Supplies', category: 'Supplies', storage: 'Locker 3' });
+assert.ok(r.ok, JSON.stringify(r));
+assert.strictEqual(sheets.Inventory.data[r.row - 1][INV_HEAD.indexOf('Storage Area')], 'Locker 3');
 
 // Expiry date → Consumables tab
-r = post('addItem', { idNumber: '212347', title: 'Hand Sanitizer', qty: '6', unit: 'bottles', department: 'HR', expiry: new Date(today.getTime() + 60 * DAY).toISOString() });
+r = post('addItem', { idNumber: '212347', title: 'Hand Sanitizer', qty: '6', unit: 'bottles', department: 'HR', type: 'Toiletries & Hygiene', category: 'Supplies', storage: 'Shelf', expiry: new Date(today.getTime() + 60 * DAY).toISOString() });
 assert.strictEqual(r.tab, 'Consumables');
 assert.ok(sheets.Consumables.data.some(x => x[1] === 'Hand Sanitizer' && x[8] instanceof Date));
 
 // Re-adding a Used Up item brings the old row back instead of duplicating it
 const tapeRows = () => sheets.Inventory.data.filter(x => x[1] === 'Masking Tape').length;
-r = post('addItem', { idNumber: '212345', title: 'Masking Tape', qty: '4', department: 'COMMPUB', storage: 'Metal Drawer (Top)', spot: 'Office supplies box' });
+r = post('addItem', { idNumber: '212345', title: 'Masking Tape', qty: '4', department: 'COMMPUB', type: 'Office Supplies', category: 'Supplies', storage: 'Metal Drawer (Top)', spot: 'Office supplies box' });
 assert.ok(r.ok && r.revived, JSON.stringify(r));
 assert.strictEqual(tapeRows(), 1);
 assert.strictEqual(invRow('Masking Tape', 'COMMPUB')[QTY], 4);
@@ -260,5 +284,30 @@ assert.strictEqual(mail[0].to, 'tan@example.com');
 assert.match(mail[0].body, /Sunscreen.*expires in 5 days/);
 assert.ok(mail.some(m => m.to === 'juan@example.com'), 'borrower emailed');
 assert.strictEqual(api.flagOverdue().reminded, 0, 'no repeat overdue reminder the same day');
+
+// ---- Review fixes ----
+// Writes must be POST
+assert.match(get({ action: 'submitOrder', idNumber: '212345', caseType: 'BORROWING' }).error, /Use POST/);
+// Asking for more than is left -> warning (still logged)
+r = post('submitOrder', { clientId: 'w1', idNumber: '212345', caseType: 'BORROWING', actingAs: 'COMMPUB', items: [{ ref: find('Scissors', 'COMMPUB').ref, title: 'Scissors', qty: 50 }] });
+assert.ok(r.ok && r.warnings.some(w => /only 1 left/.test(w)), JSON.stringify(r));
+// Qty is capped
+const capLine = get({ action: 'history' }).records.find(x => x.item === 'Scissors' && x.project === 'COMMPUB' && !x.resolved);
+assert.ok(Number(capLine.qty) <= 9999);
+// A stale ref never falls back to another department's same-name item
+r = post('submitOrder', { clientId: 'w2', idNumber: '212345', caseType: 'CONSUMING', actingAs: 'CUL', items: [{ ref: 'inventory:scissors|cul|gone|', title: 'Scissors', qty: 1 }] });
+assert.ok(r.warnings.some(w => /Not found/.test(w)));
+assert.strictEqual(invRow('Scissors', 'COMMPUB')[QTY], 1, 'COMMPUB scissors untouched');
+// Borrowing some of a "*" item doesn't mark the whole row Out
+post('submitOrder', { clientId: 'w3', idNumber: '212345', caseType: 'BORROWING', actingAs: 'COMMPUB', items: [{ ref: pins.ref, title: pins.title, qty: 5 }] });
+assert.strictEqual(invRow('Pushpins', 'COMMPUB')[STATUS], 'In Storage');
+// Chinese item names get distinct refs
+r = add({ title: '红包 Red Envelopes', type: 'Office Supplies', category: 'Supplies', storage: 'Shelf' });
+assert.ok(r.ok && /红包/.test(r.ref), JSON.stringify(r));
+// History reports when a line was resolved
+assert.ok(get({ action: 'history' }).records.some(x => x.resolved && x.resolvedAt));
+// Committee text can't become a formula in REQUESTS
+post('submitOrder', { clientId: 'w4', idNumber: '212345', caseType: 'CONSUMING', actingAs: 'COMMPUB', committee: '=1+1', items: [{ ref: pins.ref, title: pins.title, qty: 1 }] });
+assert.strictEqual(requests()[requests().length - 1][col('Department/Reason')], "'=1+1");
 
 console.log('ALL APPS SCRIPT TESTS PASSED');

@@ -10,6 +10,7 @@
   // Script URL is configured (the same script also handles login) — falling back to demo data only when
   // no URL is set yet or the request fails, so the app never breaks.
   if (!window.google || !window.google.script || !window.google.script.run) {
+    // Sample items, shown only before the app is connected. Marked demo so they can't be ordered.
     const demoInventory = [
       { id: 'ITM-100', title: 'CLDN Letters', category: 'General', location: 'Outside Org Room', qtyAvailable: 1, qtyDisplay: '1 pcs' },
       { id: 'ITM-101', title: 'Scissors', category: 'COMMPUB', location: 'Metal Drawer (Top)', qtyAvailable: 1, qtyDisplay: '1 pcs' },
@@ -50,7 +51,7 @@
         return cache.items;
       }
       showInventoryDebug(reason + '\n\nNo previously synced copy on this device yet — showing demo items.');
-      return demoInventory;
+      return demoInventory.map(d => Object.assign({ demo: true }, d));
     }
 
     async function fetchLiveInventory() {
@@ -58,7 +59,7 @@
       const url = getCelaInventoryScriptUrl();
       if (!url) {
         showInventoryDebug('No Inventory Script URL configured yet.\n\nGo to Home > Settings > paste your Inventory Apps Script URL into the "Inventory Script URL" field > Save.');
-        return demoInventory; // not configured yet — safe fallback
+        return demoInventory.map(d => Object.assign({ demo: true }, d)); // not configured yet
       }
 
       if (!navigator.onLine) {
@@ -79,8 +80,7 @@
         json = JSON.parse(text);
       } catch(parseErr) {
         console.error('[Cela Inventory] Response was not valid JSON:', text);
-        showInventoryDebug('Got a response, but it wasn\'t valid JSON (likely an HTML error page from Apps Script).\n\nFirst 400 characters of the response:\n\n' + text.substring(0, 400));
-        return demoInventory;
+        return offlineOrCachedFallback('The inventory script sent back an error page.');
       }
 
       if (json && json.ok && Array.isArray(json.items)) {
@@ -95,8 +95,14 @@
             // same-name items in different departments stay separate.
             id: item.ref || ('INV-' + i),
             title: item.title || 'Untitled',
-            category: item.category || 'General',
+            category: item.category || 'General',   // department that owns it
             type: item.type || '',
+            kind: item.kind || '',                  // sheet Category: Equipment / Supplies / …
+            source: item.source || 'inventory',     // inventory | consumable | merch
+            spot: item.spot || '',
+            sheetNotes: item.sheetNotes || '',
+            unit,
+            qtyRaw: rawQty,
             event: item.event || '',
             status: item.status || '',
             expiry: item.expiry || '',
@@ -115,8 +121,7 @@
       // Script responded with valid JSON but ok:false or unexpected shape
       const errMsg = (json && json.error) ? json.error : 'Unexpected response shape (missing ok/items).';
       console.error('[Cela Inventory] Script returned an error:', errMsg, json);
-      showInventoryDebug('Script responded but reported an error:\n\n' + errMsg + '\n\nFull response:\n' + JSON.stringify(json, null, 2));
-      return demoInventory;
+      return offlineOrCachedFallback(errMsg);
     }
 
     function showInventoryDebug(message) {
@@ -132,9 +137,13 @@
       catch(e) { return []; }
     }
 
+    // Returns false if the phone's storage is full, so callers never claim
+    // "saved offline" for an order that wasn't actually saved.
     function savePendingOrders(list) {
-      try { localStorage.setItem(PENDING_ORDERS_KEY, JSON.stringify(list)); } catch(e) {}
+      let ok = true;
+      try { localStorage.setItem(PENDING_ORDERS_KEY, JSON.stringify(list)); } catch(e) { ok = false; }
       updateOrderSyncPill();
+      return ok;
     }
 
     function getFailedOrders() {
@@ -153,7 +162,9 @@
       // retry carries the same idempotency key instead of a fresh one.
       clientId = clientId || (crypto.randomUUID ? crypto.randomUUID() : (Date.now() + '-' + Math.random().toString(36).slice(2)));
       list.push({ payload, queuedAt: Date.now(), attempts: 0, clientId });
-      savePendingOrders(list);
+      if (!savePendingOrders(list)) {
+        throw new Error("Couldn't save this request on your phone (storage is full). Connect to the internet and try again.");
+      }
     }
 
     function updateOrderSyncPill() {
@@ -227,28 +238,30 @@
         const item = current[0];
         try {
           await trySubmitOrderToSheet(item.payload, item.clientId);
-          const remaining = getPendingOrders();
-          remaining.shift();
-          savePendingOrders(remaining);
+          // Remove by clientId (another tab may have changed the queue meanwhile).
+          savePendingOrders(getPendingOrders().filter(x => x.clientId !== item.clientId));
         } catch(err) {
-          // One permanently-failing order (bad data, a removed sheet) would
-          // otherwise block every order behind it forever — after
-          // MAX_ORDER_ATTEMPTS it moves to a "failed" bucket instead, and
-          // the queue keeps moving.
+          // Network trouble just waits for the next try. A real rejection from
+          // the script (removed member, closed project…) counts as an attempt;
+          // after MAX_ORDER_ATTEMPTS it moves to "failed" with the reason, so it
+          // doesn't block everything queued behind it.
+          if (!err.fromServer) break;
           const remaining = getPendingOrders();
-          if (remaining.length && remaining[0].clientId === item.clientId) {
-            remaining[0].attempts = (remaining[0].attempts || 0) + 1;
-            if (remaining[0].attempts >= MAX_ORDER_ATTEMPTS) {
-              const failedItem = remaining.shift();
-              const failedQ = getFailedOrders();
-              failedQ.push(failedItem);
-              saveFailedOrders(failedQ);
-              savePendingOrders(remaining);
-              continue;
-            }
+          const idx = remaining.findIndex(x => x.clientId === item.clientId);
+          if (idx === -1) continue;
+          remaining[idx].attempts = (remaining[idx].attempts || 0) + 1;
+          remaining[idx].lastError = err.message;
+          if (remaining[idx].attempts >= MAX_ORDER_ATTEMPTS) {
+            const failedItem = remaining.splice(idx, 1)[0];
+            const failedQ = getFailedOrders();
+            failedQ.push(failedItem);
+            saveFailedOrders(failedQ);
             savePendingOrders(remaining);
+            showToast('A saved request could not be sent: ' + err.message, true);
+            continue;
           }
-          break; // still within retry budget — stop, keep it queued, try again later
+          savePendingOrders(remaining);
+          break;
         }
       }
 
@@ -280,7 +293,7 @@
     // (action=projects) so officers can add a project without a code change.
     const PROJECT_OPTIONS = [
       // Departments
-      'OP', 'COMMPUB', 'CUL', 'EXREL', 'FIN', 'HR', 'OSR', 'General',
+      'OP', 'COMMPUB', 'CUL', 'EXREL', 'FIN', 'HR', 'OSR',
       // Projects (same names as the Inventory tab's Event column)
       'Recruitment Week and Welcome Week', 'Celadon Merchandise', 'General Assembly',
       'Mid-Autumn Festival', 'Lunar Lotus Market', 'TALAB x Faculty Appreciation Week',
@@ -289,17 +302,23 @@
       'Mandopop Music Festival', 'Celadon Ball'
     ];
 
+    // The PROJECTS tab's list, remembered so offline requests use the same
+    // names the script will accept later.
+    function savedProjects() {
+      try { const p = JSON.parse(localStorage.getItem('cela_projects') || 'null'); return Array.isArray(p) && p.length ? p : null; } catch(e) { return null; }
+    }
     async function fetchLiveProjects() {
       const url = getCelaInventoryScriptUrl();
-      if (!url || !navigator.onLine) return PROJECT_OPTIONS.slice();
+      if (!url || !navigator.onLine) return savedProjects() || PROJECT_OPTIONS.slice();
       try {
         const res = await fetch(url + '?action=projects');
         const json = await res.json();
         if (json && json.ok && Array.isArray(json.projects) && json.projects.length) {
+          try { localStorage.setItem('cela_projects', JSON.stringify(json.projects)); } catch(e) {}
           return json.projects;
         }
       } catch(e) {}
-      return PROJECT_OPTIONS.slice();
+      return savedProjects() || PROJECT_OPTIONS.slice();
     }
 
     const localMethods = {
@@ -311,11 +330,15 @@
         status: /^\d{6}$/.test(String(idNumber).trim()) ? 'ACTIVE' : 'UNKNOWN'
       }),
       submitOrder: async (payload) => {
-        // Always keep a full local history — this never fails, regardless
-        // of network state, so an order is never silently lost.
-        const orders = JSON.parse(localStorage.getItem('cela_inventory_orders') || '[]');
-        orders.unshift({ ...payload, createdAt: new Date().toISOString() });
-        localStorage.setItem('cela_inventory_orders', JSON.stringify(orders));
+        if (payload.items.some(i => /^ITM-/.test(i.ref || ''))) {
+          throw new Error("Those are sample items. The app isn't connected to the inventory sheet yet.");
+        }
+        // Small local log of recent requests (last 50) for troubleshooting.
+        try {
+          const orders = JSON.parse(localStorage.getItem('cela_inventory_orders') || '[]');
+          orders.unshift({ ...payload, createdAt: new Date().toISOString() });
+          localStorage.setItem('cela_inventory_orders', JSON.stringify(orders.slice(0, 50)));
+        } catch(e) {}
 
         const clientId = crypto.randomUUID ? crypto.randomUUID() : (Date.now() + '-' + Math.random().toString(36).slice(2));
 
@@ -336,7 +359,7 @@
         // will retry automatically.
         try {
           const json = await trySubmitOrderToSheet(payload, clientId);
-          return { success: true, queued: false, orderId: 'ORD-' + Date.now(), logged: json.logged };
+          return { success: true, queued: false, logged: json.logged, due: json.due, warnings: json.warnings || [] };
         } catch(err) {
           if (err.fromServer) throw err; // show the reason instead of retrying something that will keep failing
           enqueuePendingOrder(payload, clientId);
@@ -357,14 +380,14 @@
     catalogFormat: 'grid',   // grid | list
     catalogSearch: '',
     catalogSort: 'default',  // default | name | category | location
-    catalogCategory: 'all',  // 'all' or one of the sheet's own Category values
+    catalogCategory: 'all',  // 'all' or a category key (see CATEGORY_DEFS)
+    catalogDept: 'all',      // 'all' or a department code
     inventory: [],
-    cart: {},                // { itemId: { item, qty } }
+    cart: {},                // { itemId: { item, qty, action } }
     scanLog: [],             // { idNumber, status, time }
     lastId: null,            // logged-in ID lookup result: { idNumber, name, role, committee, status }
     projectOptions: [],
     historyTab: 'personal',  // personal | project
-    checkoutCase: 'BORROWING', // BORROWING | CONSUMING | RETURNING
     actingAs: '',            // project/department every request is logged under
     outFilter: 'mine'        // Borrowed-now view: mine (my projects/depts) | all
   };
@@ -422,7 +445,7 @@
 
     if (!json || json.ok === false) {
       console.error('[Cela Login] Script reported an error:', json && json.error, json);
-      return { found: false, idNumber: String(idNumber).trim(), name: '', level: 'NONE', status: 'ERROR' };
+      return { found: false, idNumber: String(idNumber).trim(), name: '', level: 'NONE', status: 'ERROR', message: json && json.error };
     }
 
     if (json.found) {
@@ -470,7 +493,6 @@
     seedDefaultScriptUrls();
 
     bindNav();
-    bindMainNav();
     bindSidebarLogout();
     bindLogin();
     bindHome();
@@ -478,11 +500,12 @@
     bindHeaderActions();
     bindCatalogToggle();
     bindCheckoutForm();
+    bindForSheet();
     bindModal();
     bindInstallBanner();
     renderContacts();
 
-    loadInventory();
+    restoreCart();
     loadProjectOptions();
     updateCartBadge();
 
@@ -494,6 +517,7 @@
       renderActForSelects();
       showView('home');
       refreshLoginInBackground();
+      loadInventory(); // warm the item list in the background
     } else {
       showView('login');
     }
@@ -512,118 +536,85 @@
     document.querySelectorAll('#bottom-nav .nav-btn').forEach(btn => {
       btn.addEventListener('click', () => showView(btn.dataset.view));
     });
-  }
-
-  function bindMainNav() {
-    document.querySelectorAll('#bottom-nav-main .nav-btn').forEach(btn => {
-      btn.addEventListener('click', () => {
-        if (state.view === 'history' && (btn.id === 'nav-slot-2' || btn.id === 'nav-slot-3')) {
-          setHistoryTab(btn.id === 'nav-slot-2' ? 'personal' : 'project');
-          return;
-        }
-        showView(btn.dataset.mainview);
-      });
+    document.querySelectorAll('#history-tabs [data-tab]').forEach(btn => {
+      btn.addEventListener('click', () => setHistoryTab(btn.dataset.tab));
     });
   }
 
-  // The pinned "Log out" at the bottom of the desktop sidebar — present in
-  // both nav bars since either one can be the active sidebar at a time.
+  // The pinned "Log out" at the bottom of the desktop sidebar.
   function bindSidebarLogout() {
     document.querySelectorAll('.sidebar-logout-link').forEach(link => {
       link.addEventListener('click', performLogout);
     });
   }
 
-  // Views that use the Celadon identity header + the Home/Settings/Help
-  // bottom nav instead of the standard app header + Catalog/Cart/Checkout nav.
-  const MAIN_VIEWS = ['home', 'settings', 'help', 'history', 'out', 'add'];
+  // Views with their own brand block (no shared app header). Items, Cart and
+  // Checkout use the shared header with the cart/contact buttons.
+  const MAIN_VIEWS = ['home', 'settings', 'help', 'history', 'out', 'add', 'done'];
+  // Which bottom-nav tab lights up for views that aren't tabs themselves.
+  const NAV_FOR_VIEW = { checkout: 'cart', done: 'home', history: 'settings', help: 'settings', add: 'catalog' };
 
   function showView(view) {
+    if (view !== 'login' && !state.lastId) view = 'login';
     state.view = view;
+    closeItemSheet();
     document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
-    document.querySelectorAll('.nav-btn').forEach(b => b.classList.remove('active'));
     document.getElementById('view-' + view).classList.add('active');
 
-    const navBtn = document.querySelector('.nav-btn[data-view="' + view + '"]') ||
-                   document.querySelector('.nav-btn[data-mainview="' + view + '"]');
-    if (navBtn) navBtn.classList.add('active');
+    const navKey = NAV_FOR_VIEW[view] || view;
+    document.querySelectorAll('#bottom-nav .nav-btn').forEach(b => {
+      const on = b.dataset.view === navKey;
+      b.classList.toggle('active', on);
+      if (on) b.setAttribute('aria-current', 'page'); else b.removeAttribute('aria-current');
+    });
 
     const isMain = MAIN_VIEWS.includes(view);
     const isLogin = view === 'login';
-
-    // The desktop sidebar is hidden on the login screen. Keep the wide-screen
-    // content centered in the viewport until the sidebar is actually visible.
     document.body.classList.toggle('has-desktop-sidebar', !isLogin);
-
-    // Login/Home/Settings/Help/History all use their own top brand block —
-    // hide the shared app chrome so it isn't duplicated. Catalog/Cart/
-    // Checkout share the standard header + bottom nav.
     document.getElementById('app-header').style.display = (isMain || isLogin) ? 'none' : 'flex';
-    document.getElementById('bottom-nav').style.display = (isMain || isLogin) ? 'none' : 'flex';
-    document.getElementById('bottom-nav-main').style.display = isMain ? 'flex' : 'none';
+    document.getElementById('bottom-nav').style.display = isLogin ? 'none' : 'flex';
     document.getElementById('cart-icon-btn').style.display = view === 'catalog' ? 'flex' : 'none';
     document.getElementById('contact-icon-btn').style.display = view === 'catalog' ? 'flex' : 'none';
-
-    // History repurposes the Settings/Help nav slots as Personal/Project —
-    // relabel them here, and restore the defaults for every other view.
-    applyMainNavForView(view);
+    window.scrollTo(0, 0);
 
     if (view === 'settings') {
       document.getElementById('settings-inventory-url').value = getInventoryScriptUrl();
       const tokenInput = document.getElementById('settings-inventory-token');
       if (tokenInput) tokenInput.value = getInventoryToken();
     }
-    if (view === 'history') setHistoryTab('personal');
+    if (view === 'history') setHistoryTab(state.historyTab || 'personal');
     if (view === 'out') renderOut();
     if (view === 'add') renderAddForm();
     if (view === 'home') refreshHomeData();
     if (view === 'cart') renderCart();
     if (view === 'checkout') renderCheckout();
     if (view === 'catalog') loadInventory();
-  }
-
-  // ── History view's Personal/Project tabs ──
-  // The History view reuses the Home/Settings/Help bottom nav's slots 2 & 3
-  // (normally Settings/Help) as Personal/Project instead, per the design —
-  // rather than a fourth, separate nav bar.
-  const NAV_SLOT_DEFAULT = {
-    2: '<span class="nav-emoji"><img class="svg-icon nav-svg-icon" src="icons/ui/cog.svg" alt=""></span>Settings',
-    3: '<span class="nav-emoji"><img class="svg-icon nav-svg-icon" src="icons/ui/contact.svg" alt=""></span>Help'
-  };
-  const NAV_SLOT_HISTORY = {
-    2: '<span class="nav-emoji"><img class="svg-icon nav-svg-icon" src="icons/ui/user.svg" alt=""></span>Personal',
-    3: '<span class="nav-emoji"><img class="svg-icon nav-svg-icon" src="icons/ui/folder.svg" alt=""></span>Project'
-  };
-
-  function applyMainNavForView(view) {
-    const slot2 = document.getElementById('nav-slot-2');
-    const slot3 = document.getElementById('nav-slot-3');
-    if (!slot2 || !slot3) return;
-    const map = view === 'history' ? NAV_SLOT_HISTORY : NAV_SLOT_DEFAULT;
-    slot2.innerHTML = map[2];
-    slot3.innerHTML = map[3];
+    if (view === 'login') warmUpBackend();
   }
 
   function setHistoryTab(tab) {
     state.historyTab = tab;
-
-    const slot2 = document.getElementById('nav-slot-2');
-    const slot3 = document.getElementById('nav-slot-3');
-    const homeSlot = document.querySelector('#bottom-nav-main .nav-btn[data-mainview="home"]');
-    [homeSlot, slot2, slot3].forEach(b => b && b.classList.remove('active'));
-    if (tab === 'project') {
-      slot3.classList.add('active');
-    } else {
-      slot2.classList.add('active');
-    }
-
+    document.querySelectorAll('#history-tabs [data-tab]').forEach(b => {
+      const on = b.dataset.tab === tab;
+      b.classList.toggle('active', on);
+      b.setAttribute('aria-selected', on ? 'true' : 'false');
+    });
     const projectSelect = document.getElementById('history-project-select');
     if (projectSelect) {
       projectSelect.style.display = tab === 'project' ? '' : 'none';
       if (tab === 'project' && !projectSelect.value && state.actingAs) projectSelect.value = state.actingAs;
     }
-
     renderHistory();
+  }
+
+  // Apps Script "cold starts" can take a few seconds. Poke it while the
+  // person is still typing their ID so login and the first load feel instant.
+  let warmedUp = false;
+  function warmUpBackend() {
+    const url = getInventoryScriptUrl();
+    if (warmedUp || !url || !navigator.onLine) return;
+    warmedUp = true;
+    fetch(url + '?action=projects').catch(() => {});
   }
 
   // ── History data: fetched from the Inventory Apps Script (action=history),
@@ -690,7 +681,7 @@
     const caseClass = rec.resolved ? 'resolved' : (rec.overdue ? 'overdue' : 'pending');
     const dueNote = pendingBorrow && rec.due ? `<div class="history-item-date${rec.overdue ? ' overdue' : ''}">Due ${shortDate(rec.due)}</div>` : `<div class="history-item-date">${when}</div>`;
     const resolveBtn = pendingBorrow && canResolve(rec)
-      ? `<button type="button" class="resolve-btn" onclick="resolveLine('${escapeAttr(rec.lineId)}', this)">Mark returned</button>`
+      ? `<button type="button" class="resolve-btn" data-resolve="${escapeHtml(rec.lineId)}">Mark returned</button>`
       : '';
     return `
       <div class="history-item${rec.overdue ? ' is-overdue' : ''}">
@@ -740,32 +731,216 @@
     return !!(rec.lineId && state.lastId);
   }
 
+  /* ---------------- "What is this for?" picker ----------------
+     Departments shown with their A-yi, projects with their cover photo from
+     ateneoceladon.com. The two hidden <select>s stay as the form values. */
+  const DEPT_INFO = {
+    OP: 'Office of the President',
+    COMMPUB: 'Communications and Publications',
+    CUL: 'Cultural Affairs',
+    EXREL: 'External Relations',
+    FIN: 'Financial Affairs',
+    HR: 'Human Resources',
+    OSR: 'Organization Strategies and Research',
+    General: 'Whole org'
+  };
+  const PROJECT_BRAND = {
+    'Recruitment Week and Welcome Week': { short: 'RecWeek', cover: 'recruitment-week-and-welcome-week' },
+    'Celadon Merchandise': { short: 'Celamerch', emoji: '👕' },
+    'General Assembly': { short: 'GA', cover: 'general-assembly' },
+    'Mid-Autumn Festival': { short: 'MAF', cover: 'mid-autumn-festival' },
+    'Lunar Lotus Market': { cover: 'lunar-lotus-market' },
+    'TALAB x Faculty Appreciation Week': { short: 'TALAB x FAW', emoji: '🍎' },
+    'Jade Business Summit': { emoji: '💼' },
+    'Leadership Development Program': { short: 'LDP', cover: 'leadership-development-program' },
+    'Celadon Rose Sale': { emoji: '🌹' },
+    'Chinese New Year': { short: 'CNY', cover: 'chinese-new-year' },
+    'Spring Film Festival': { cover: 'spring-film-festival' },
+    'Binondo Amazing Race': { cover: 'binondo-amazing-race' },
+    'Mandopop Music Festival': { cover: 'mandopop-music-festival' },
+    'Celadon Ball': { cover: 'celadon-ball' }
+  };
+
+  // Theme colour per department/project: [accent, deep, tint]. Picked from the
+  // website's palette (navy, blues, crimson, jade, gold, brown) and each
+  // event's character; every accent keeps white text readable (≥4.5:1).
+  const THEMES = {
+    "OP": ["#003078", "#001c45", "#e0e6ef"],
+    "COMMPUB": ["#3F5F99", "#304975", "#e8ecf3"],
+    "CUL": ["#970708", "#660505", "#f3e1e1"],
+    "EXREL": ["#477d6a", "#355c4e", "#ebf3f0"],
+    "FIN": ["#906a07", "#5f4605", "#f6f0e2"],
+    "HR": ["#2a7d9d", "#1f5d75", "#e5eff3"],
+    "OSR": ["#783F1A", "#4e2911", "#efe8e4"],
+    "Recruitment Week and Welcome Week": ["#aa5d19", "#7e4512", "#fbefe4"],
+    "Celadon Merchandise": ["#0f766e", "#094944", "#e2efee"],
+    "General Assembly": ["#1b3a6b", "#112442", "#e4e7ed"],
+    "Mid-Autumn Festival": ["#917020", "#675017", "#f9f3e6"],
+    "Lunar Lotus Market": ["#d0353e", "#aa282f", "#f9e7e8"],
+    "TALAB x Faculty Appreciation Week": ["#5f7e1f", "#405515", "#edf1e5"],
+    "Jade Business Summit": ["#398163", "#295e48", "#e8f2ed"],
+    "Leadership Development Program": ["#3F5F99", "#304975", "#e8ecf3"],
+    "Celadon Rose Sale": ["#c2185b", "#951246", "#f8e3eb"],
+    "Chinese New Year": ["#b71c1c", "#8b1515", "#f6e4e4"],
+    "Spring Film Festival": ["#c84067", "#a53051", "#f9ecf0"],
+    "Binondo Amazing Race": ["#a0522d", "#783e22", "#f4eae6"],
+    "Mandopop Music Festival": ["#5b2a86", "#411e5f", "#ebe5f0"],
+    "Celadon Ball": ["#1a1f3f", "#0b0d1b", "#e4e4e8"]
+  };
+  const DEFAULT_THEME = ['#003078', '#001c45', '#eef2f8'];
+
+  function themeFor(name) {
+    const key = Object.keys(THEMES).find(k => sameName(k, name));
+    return key ? THEMES[key] : DEFAULT_THEME;
+  }
+
+  // Recolours the app for the department/project you're working for.
+  function applyTheme(name) {
+    const [accent, deep, tint] = themeFor(name);
+    const root = document.documentElement.style;
+    root.setProperty('--theme', accent);
+    root.setProperty('--theme-deep', deep);
+    root.setProperty('--theme-tint', tint);
+  }
+
+  function brandFor(name) {
+    const dept = Object.keys(DEPT_INFO).find(d => sameName(d, name));
+    if (dept) return { kind: 'dept', name, title: dept, sub: DEPT_INFO[dept], img: ayiFor(dept), theme: themeFor(dept) };
+    const key = Object.keys(PROJECT_BRAND).find(p => sameName(p, name));
+    const b = key ? PROJECT_BRAND[key] : {};
+    return { kind: 'project', name, title: name, sub: b.short || 'Project', cover: b.cover ? 'brand/covers/' + b.cover + '.jpg' : '', emoji: b.emoji || '✨', theme: themeFor(name) };
+  }
+
+  function pickerButtonHtml(name) {
+    if (!name) {
+      return `<span class="fp-visual fp-empty" aria-hidden="true">?</span>
+        <span class="fp-text"><span class="fp-eyebrow">Not chosen yet</span><span class="fp-name">Choose a department or project</span></span>
+        <span class="fp-change">Choose</span>`;
+    }
+    const b = brandFor(name);
+    const visual = b.kind === 'dept'
+      ? `<span class="fp-visual fp-ayi"><img src="${b.img}" alt=""></span>`
+      : (b.cover ? `<span class="fp-visual fp-cover" style="background-image:url('${b.cover}')"></span>` : `<span class="fp-visual fp-emoji" style="background:linear-gradient(135deg, ${b.theme[0]}, ${b.theme[1]})">${b.emoji}</span>`);
+    return `${visual}
+      <span class="fp-text"><span class="fp-eyebrow">${b.kind === 'dept' ? 'Department' : 'Project'}</span><span class="fp-name">${escapeHtml(b.title)}</span><span class="fp-sub">${escapeHtml(b.kind === 'dept' ? b.sub : (b.sub !== 'Project' ? b.sub : ''))}</span></span>
+      <span class="fp-change">Change</span>`;
+  }
+
+  // Swap each <select> for a branded button (once), keeping the select as the value holder.
+  function ensurePickerButtons() {
+    ['home-actfor-select', 'project-select'].forEach(id => {
+      const sel = document.getElementById(id);
+      if (!sel || sel.dataset.enhanced) return;
+      sel.dataset.enhanced = '1';
+      sel.classList.add('sr-only-select');
+      sel.setAttribute('tabindex', '-1');
+      sel.setAttribute('aria-hidden', 'true');
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'for-picker' + (id === 'home-actfor-select' ? ' on-navy' : '');
+      btn.id = id + '-btn';
+      btn.setAttribute('aria-haspopup', 'dialog');
+      btn.addEventListener('click', openForSheet);
+      sel.insertAdjacentElement('afterend', btn);
+    });
+  }
+
   function renderActForSelects() {
+    ensurePickerButtons();
     const targets = allowedTargets();
     const before = state.actingAs;
-    // Only fall back once the project list has loaded; before that the saved
-    // choice can't be checked and must not be thrown away.
-    if (targets.length && !targets.some(t => t === state.actingAs)) {
+    // Only check the saved choice once the list has loaded. With no saved
+    // choice, use the member's own department if the member list has one —
+    // otherwise leave it unchosen rather than silently picking the first.
+    if (targets.length && state.actingAs && !targets.some(t => t === state.actingAs)) state.actingAs = '';
+    if (targets.length && !state.actingAs) {
       const ownDept = state.lastId && state.lastId.committee;
-      state.actingAs = targets.find(t => sameName(t, ownDept)) || targets[0] || '';
+      state.actingAs = targets.find(t => sameName(t, ownDept)) || '';
     }
     if (state.actingAs !== before && typeof renderProjectDash === 'function') renderProjectDash();
-    const html = targets.length
-      ? targets.map(t => `<option value="${escapeHtml(t)}"${t === state.actingAs ? ' selected' : ''}>${escapeHtml(t)}</option>`).join('')
-      : '<option value="">Not linked to a department or project</option>';
+    applyTheme(state.actingAs);
+    const html = '<option value="">Choose…</option>' +
+      targets.map(t => `<option value="${escapeHtml(t)}"${t === state.actingAs ? ' selected' : ''}>${escapeHtml(t)}</option>`).join('');
     ['home-actfor-select', 'project-select'].forEach(id => {
       const el = document.getElementById(id);
       if (!el) return;
       el.innerHTML = html;
-      el.disabled = !targets.length;
+      el.value = state.actingAs;
+      const btn = document.getElementById(id + '-btn');
+      if (btn) {
+        btn.innerHTML = pickerButtonHtml(state.actingAs);
+        btn.disabled = !targets.length;
+        btn.setAttribute('aria-label', state.actingAs ? 'For: ' + state.actingAs + '. Change' : 'Choose a department or project');
+      }
     });
     const note = document.getElementById('actfor-empty-note');
     if (note) note.style.display = targets.length ? 'none' : '';
   }
 
+  function openForSheet() {
+    const sheet = document.getElementById('for-sheet');
+    document.getElementById('for-search').value = '';
+    renderForSheet('');
+    sheet.classList.add('show');
+    sheet.setAttribute('aria-hidden', 'false');
+    document.body.classList.add('sheet-open');
+  }
+
+  function closeForSheet() {
+    const sheet = document.getElementById('for-sheet');
+    if (!sheet.classList.contains('show')) return;
+    sheet.classList.remove('show');
+    sheet.setAttribute('aria-hidden', 'true');
+    document.body.classList.remove('sheet-open');
+  }
+
+  function renderForSheet(query) {
+    const q = String(query || '').toLowerCase().trim();
+    const all = allowedTargets().map(brandFor);
+    const match = b => !q || [b.title, b.sub, b.name].join(' ').toLowerCase().includes(q);
+    const depts = all.filter(b => b.kind === 'dept' && match(b));
+    const projects = all.filter(b => b.kind === 'project' && match(b));
+    const selected = name => sameName(name, state.actingAs) ? ' selected' : '';
+    const deptCard = b => `
+      <button type="button" class="for-card dept${selected(b.name)}" data-pick="${escapeHtml(b.name)}" style="--c:${b.theme[0]};--c-tint:${b.theme[2]}">
+        <img src="${b.img}" alt="">
+        <span class="for-card-code">${escapeHtml(b.title)}</span>
+        <span class="for-card-sub">${escapeHtml(b.sub)}</span>
+      </button>`;
+    const projectCard = b => `
+      <button type="button" class="for-card project${b.cover ? '' : ' no-cover'}${selected(b.name)}" data-pick="${escapeHtml(b.name)}" style="--c:${b.theme[0]};--c-deep:${b.theme[1]};${b.cover ? `background-image:linear-gradient(180deg, transparent 25%, ${b.theme[1]}e6 100%), url('${b.cover}')` : ''}">
+        ${b.cover ? '' : `<span class="for-card-emoji" aria-hidden="true">${b.emoji}</span>`}
+        <span class="for-card-name">${escapeHtml(b.title)}</span>
+        ${b.sub !== 'Project' ? `<span class="for-card-short">${escapeHtml(b.sub)}</span>` : ''}
+      </button>`;
+    document.getElementById('for-sheet-body').innerHTML =
+      (depts.length ? `<div class="for-section-label">Departments</div><div class="for-grid depts">${depts.map(deptCard).join('')}</div>` : '') +
+      (projects.length ? `<div class="for-section-label">Projects</div><div class="for-grid projects">${projects.map(projectCard).join('')}</div>` : '') +
+      (!depts.length && !projects.length ? '<div class="history-empty">No match. Officers can add projects in the PROJECTS tab.</div>' : '');
+  }
+
+  function bindForSheet() {
+    document.getElementById('for-sheet-close').addEventListener('click', closeForSheet);
+    document.getElementById('for-sheet').addEventListener('click', e => {
+      if (e.target.id === 'for-sheet') return closeForSheet();
+      const card = e.target.closest('[data-pick]');
+      if (!card) return;
+      setActingAs(card.dataset.pick);
+      closeForSheet();
+      if (state.view === 'checkout') renderCheckout();
+    });
+    document.getElementById('for-search').addEventListener('input', e => renderForSheet(e.target.value));
+    document.addEventListener('keydown', e => { if (e.key === 'Escape') closeForSheet(); });
+  }
+
   async function refreshLoginInBackground() {
     if (!navigator.onLine || !state.lastId || !getInventoryScriptUrl()) return;
     const fresh = await fetchIdLookup(state.lastId.idNumber);
+    if (fresh.status === 'NOT_FOUND' && state.lastId) {
+      performLogout();
+      showToast('Your ID is no longer in the member list. Ask an officer if this is a mistake.', true);
+      return;
+    }
     if (!fresh.found || !state.lastId || fresh.idNumber !== state.lastId.idNumber) return;
     state.lastId = fresh;
     saveLogin(fresh);
@@ -812,7 +987,10 @@
       if (btn) { btn.disabled = false; btn.textContent = 'Mark returned'; }
     }
   }
-  window.resolveLine = resolveLine;
+  document.addEventListener('click', e => {
+    const btn = e.target.closest('[data-resolve]');
+    if (btn) resolveLine(btn.dataset.resolve, btn);
+  });
 
   /* ---------------- Add to inventory ----------------
      Creates a new row in the Inventory tab (or Consumables when it has an
@@ -861,12 +1039,18 @@
     if (current && values.includes(current)) el.value = current;
   }
 
+  const NEW_LOCATION = '__new__';
+
   function fillAddSelects(keep) {
     const o = getAddOptions();
     fillSelect('add-dept', o.departments, 'Choose a department', keep);
     fillSelect('add-type', o.types, 'Choose a type', keep);
-    fillSelect('add-category', o.categories, 'Choose a category', keep);
-    fillSelect('add-storage', o.storageAreas, 'Not sure yet', keep);
+    fillSelect('add-category', o.categories, 'Equipment, Supplies…', keep);
+    const storage = document.getElementById('add-storage');
+    const keepStorage = keep ? storage.value : '';
+    fillSelect('add-storage', o.storageAreas, 'Not sure yet', false);
+    storage.insertAdjacentHTML('beforeend', `<option value="${NEW_LOCATION}">+ New location…</option>`);
+    if (keepStorage) storage.value = keepStorage;
     fillSelect('add-event', o.events, 'None', keep);
   }
 
@@ -874,7 +1058,7 @@
     const deptSelect = document.getElementById('add-dept');
     const keep = deptSelect && deptSelect.options.length > 1;
     fillAddSelects(keep);
-    if (!keep) {
+    if (!keep || !deptSelect.value) {
       // Default the department to what you're borrowing for (if it's a
       // department), else your own.
       const o = getAddOptions();
@@ -885,37 +1069,141 @@
     refreshAddOptions();
   }
 
+  // ---- Add form checks (the script checks the same rules again) ----
+  const ADD_RULES = {
+    'add-title': v => {
+      if (!v) return 'Enter the item name.';
+      if (v.length < 2) return 'Use at least 2 characters.';
+      if (/^[=+\-@]/.test(v)) return "Names can't start with = + - or @.";
+      return '';
+    },
+    'add-qty': v => {
+      if (!v) return 'Enter how many (or * if there are a lot).';
+      if (v === '*') return '';
+      if (!/^\d+$/.test(v)) return 'Use a whole number like 5, or *.';
+      const n = Number(v);
+      if (n < 1) return 'Must be at least 1.';
+      if (n > 9999) return 'That looks too high. Max 9999.';
+      return '';
+    },
+    'add-unit': v => (v && !/^[\p{L} .\/-]+$/u.test(v) ? 'Use a word like pcs, packs or sets.' : ''),
+    'add-dept': v => (v ? '' : 'Choose the department that owns it.'),
+    'add-type': v => (v ? '' : 'Choose a type so people can find it.'),
+    'add-category': v => (v ? '' : 'Equipment comes back; Supplies get used up.'),
+    'add-storage': () => {
+      const sel = document.getElementById('add-storage').value;
+      const spot = document.getElementById('add-spot').value.trim();
+      if (sel === NEW_LOCATION) {
+        const name = document.getElementById('add-storage-new').value.trim();
+        if (name.length < 3) return 'Name the new location (at least 3 characters).';
+        if (/^[=+\-@]/.test(name)) return "Location names can't start with = + - or @.";
+        const known = getAddOptions().storageAreas.find(a => sameName(a, name));
+        if (known) return `"${known}" already exists. Pick it from the list instead.`;
+        return '';
+      }
+      return (!sel && !spot) ? 'Pick a storage area or fill in the specific spot.' : '';
+    },
+    'add-expiry': v => {
+      if (!document.getElementById('add-expires').checked) return '';
+      if (!v) return 'Pick the expiry date, or untick the box.';
+      const d = new Date(v + 'T00:00:00');
+      const today = new Date(); today.setHours(0, 0, 0, 0);
+      if (d < new Date(today.getTime() - 365 * 86400000) || d > new Date(today.getTime() + 15 * 365 * 86400000)) return 'Check the year.';
+      return '';
+    }
+  };
+
+  function checkAddField(id, show) {
+    const el = document.getElementById(id);
+    const msg = ADD_RULES[id](el.value.trim());
+    const errEl = document.getElementById('err-' + id);
+    if (show && errEl) errEl.textContent = msg;
+    if (show) el.setAttribute('aria-invalid', msg ? 'true' : 'false');
+    return msg;
+  }
+
+  // Warn while typing if this exact item already exists, and offer Add stock.
+  function checkDuplicate() {
+    const hint = document.getElementById('dup-add-title');
+    const title = document.getElementById('add-title').value.trim();
+    const dept = document.getElementById('add-dept').value;
+    hint.innerHTML = '';
+    if (title.length < 2) return;
+    const same = state.inventory.filter(i => sameName(i.title, title));
+    if (!same.length) return;
+    const exact = same.find(i => !dept || sameName(i.category, dept));
+    const item = exact || same[0];
+    hint.innerHTML = `Already listed: <b>${escapeHtml(item.title)}</b> (${escapeHtml(item.category)}${item.location ? ', ' + escapeHtml(item.location) : ''}). ` +
+      `<button type="button" class="text-link" data-open-item="${escapeHtml(item.id)}">Add stock to it instead</button>`;
+  }
+
   function bindAddForm() {
     const form = document.getElementById('add-form');
     if (!form) return;
     document.getElementById('add-expires').addEventListener('change', e => {
       document.getElementById('add-expiry-wrap').style.display = e.target.checked ? '' : 'none';
+      if (!e.target.checked) document.getElementById('err-add-expiry').textContent = '';
     });
+    document.getElementById('add-storage').addEventListener('change', e => {
+      const isNew = e.target.value === NEW_LOCATION;
+      document.getElementById('add-storage-new-wrap').style.display = isNew ? '' : 'none';
+      if (isNew) document.getElementById('add-storage-new').focus();
+    });
+    // Check a field once the person leaves it, then live while they fix it.
+    Object.keys(ADD_RULES).forEach(id => {
+      const el = document.getElementById(id);
+      el.addEventListener('blur', () => checkAddField(id, true));
+      el.addEventListener('input', () => { if (el.getAttribute('aria-invalid') === 'true') checkAddField(id, true); });
+      el.addEventListener('change', () => { if (el.tagName === 'SELECT') checkAddField(id, true); });
+    });
+    ['add-storage-new', 'add-spot'].forEach(id => document.getElementById(id).addEventListener('input', () => {
+      if (document.getElementById('add-storage').getAttribute('aria-invalid') === 'true') checkAddField('add-storage', true);
+    }));
+    document.getElementById('add-title').addEventListener('input', checkDuplicate);
+    document.getElementById('add-dept').addEventListener('change', checkDuplicate);
+    document.getElementById('dup-add-title').addEventListener('click', e => {
+      const b = e.target.closest('[data-open-item]');
+      if (!b) return;
+      showView('catalog');
+      openItemSheet(b.dataset.openItem);
+      sheetState.action = 'RESTOCKING';
+      renderItemSheet();
+    });
+    const notes = document.getElementById('add-notes');
+    notes.addEventListener('input', () => { document.getElementById('add-notes-count').textContent = notes.value.length + ' / 300'; });
     form.addEventListener('submit', e => { e.preventDefault(); submitAddItem(); });
   }
 
+  let addingItem = false;
   async function submitAddItem() {
-    const val = id => document.getElementById(id).value.trim();
+    if (addingItem) return;
+    const val = id => document.getElementById(id).value.replace(/\s+/g, ' ').trim();
     const err = document.getElementById('add-error');
     const btn = document.getElementById('add-submit');
     err.textContent = '';
+
+    // Run every check and jump to the first problem.
+    const problems = Object.keys(ADD_RULES).filter(id => checkAddField(id, true));
+    if (problems.length) {
+      err.textContent = problems.length === 1 ? 'Fix the highlighted field.' : 'Fix the ' + problems.length + ' highlighted fields.';
+      document.getElementById(problems[0]).focus();
+      return;
+    }
     const expires = document.getElementById('add-expires').checked;
+    const storageSel = document.getElementById('add-storage').value;
     const payload = {
       idNumber: state.lastId && state.lastId.idNumber,
       title: val('add-title'), qty: val('add-qty'), unit: val('add-unit'),
       department: val('add-dept'), type: val('add-type'), category: val('add-category'),
-      storage: val('add-storage'), spot: val('add-spot'), event: val('add-event'),
+      storage: storageSel === NEW_LOCATION ? val('add-storage-new') : storageSel,
+      spot: val('add-spot'), event: val('add-event'),
       notes: val('add-notes'), expiry: expires ? val('add-expiry') : ''
     };
-    if (!payload.title) { err.textContent = 'Enter the item name.'; return; }
-    if (!payload.department) { err.textContent = 'Choose the department that owns it.'; return; }
-    if (payload.qty && !/^(\d+|\*)$/.test(payload.qty)) { err.textContent = 'Quantity must be a whole number, or * for "a lot".'; return; }
-    if (expires && !payload.expiry) { err.textContent = 'Pick the expiry date, or untick "It has an expiry date".'; return; }
-    if (!payload.storage && !payload.spot) { err.textContent = 'Add a storage area or a specific spot so people can find it.'; return; }
     const url = getInventoryScriptUrl();
     if (!url || !navigator.onLine) { err.textContent = 'You need to be online to add items.'; return; }
 
-    btn.disabled = true; btn.textContent = 'ADDING…';
+    addingItem = true;
+    btn.disabled = true; btn.innerHTML = '<span class="spinner" aria-hidden="true"></span> ADDING…';
     try {
       const token = getInventoryToken();
       const res = await fetch(url + '?action=addItem', {
@@ -926,17 +1214,28 @@
       const json = await res.json();
       if (!json || !json.ok) throw new Error((json && json.error) || 'Could not add the item');
       showToast(json.revived ? payload.title + ' is back in the inventory' : payload.title + ' added' + (json.tab === 'Consumables' ? ' to Consumables' : ''));
+      if (storageSel === NEW_LOCATION) {
+        // The new location is now in the sheet's dropdown; refresh our copy.
+        try { localStorage.removeItem(ADD_OPTIONS_KEY); } catch(e) {}
+        refreshAddOptions();
+      }
       document.getElementById('add-form').reset();
       document.getElementById('add-expiry-wrap').style.display = 'none';
+      document.getElementById('add-storage-new-wrap').style.display = 'none';
+      document.getElementById('dup-add-title').innerHTML = '';
+      document.querySelectorAll('#add-form [aria-invalid]').forEach(el => el.removeAttribute('aria-invalid'));
       // Show the new item in the catalog.
       state.catalogSearch = payload.title;
       state.catalogCategory = 'all';
+      state.catalogDept = 'all';
       const search = document.getElementById('catalog-search');
       if (search) search.value = payload.title;
       showView('catalog');
+      loadInventory(true);
     } catch(e2) {
       err.textContent = e2.message;
     } finally {
+      addingItem = false;
       btn.disabled = false; btn.textContent = 'ADD TO INVENTORY';
     }
   }
@@ -974,17 +1273,28 @@
     const code = Object.keys(AYI_BY_DEPT).find(d => sameName(d, name));
     return 'brand/ayi/' + (code ? AYI_BY_DEPT[code] : 'ayi') + '.png';
   }
-  const dashState = { selected: new Set(), confirming: false, busy: false, records: [], offline: false, openGroups: null };
+  const dashState = { selected: new Set(), confirming: false, busy: false, records: [], offline: false, loading: false, openGroups: null };
   const DASH_OPEN_ALL_UP_TO = 5; // with this many items or fewer, every group starts expanded
 
   let homeLoadToken = 0;
   async function refreshHomeData() {
     const myToken = ++homeLoadToken;
+    const cached = getCachedHistory();
+    if (cached && Array.isArray(cached.records)) {
+      updateOutCount(cached.records);
+      dashState.records = cached.records;
+      dashState.loading = false;
+      renderProjectDash();
+    } else {
+      dashState.loading = true;
+      renderProjectDash();
+    }
     const { records, offline } = await fetchHistoryRecords();
     if (myToken !== homeLoadToken) return;
     updateOutCount(records);
     dashState.records = records;
     dashState.offline = offline;
+    dashState.loading = false;
     renderProjectDash();
   }
 
@@ -996,13 +1306,21 @@
     if (heroAyi) heroAyi.src = ayiFor(project);
     if (!project || !state.lastId) { box.style.display = 'none'; return; }
     box.style.display = '';
+    if (dashState.loading) {
+      document.getElementById('proj-dash-title').textContent = project;
+      document.getElementById('proj-dash-sub').textContent = 'Checking what\'s out…';
+      document.getElementById('proj-dash-stats').innerHTML = '<div class="dash-stat skeleton"></div>'.repeat(3);
+      document.getElementById('proj-dash-list').innerHTML = '<div class="dash-row skeleton" style="height:54px;"></div>'.repeat(2);
+      document.getElementById('proj-dash-actions').innerHTML = '';
+      return;
+    }
 
     const borrows = dashState.records.filter(r => sameName(r.project, project) && r.caseType === 'BORROWING');
     const out = borrows.filter(r => !r.resolved)
       .sort((a, b) => (b.overdue - a.overdue) || String(a.due).localeCompare(String(b.due)));
-    // History has no "returned on" date, so "recent" is judged by when the item was borrowed.
     const recentCutoff = Date.now() - RECENT_RETURN_DAYS * 86400000;
-    const returned = borrows.filter(r => r.resolved && r.time && new Date(r.time) >= recentCutoff);
+    const returned = borrows.filter(r => r.resolved && new Date(r.resolvedAt || r.time) >= recentCutoff)
+      .sort((a, b) => String(b.resolvedAt || b.time).localeCompare(String(a.resolvedAt || a.time)));
     const overdue = out.filter(r => r.overdue).length;
     const dueSoon = out.filter(r => !r.overdue && r.due && new Date(r.due) - Date.now() < 3 * 86400000).length;
 
@@ -1248,8 +1566,8 @@
       const projectSelect = document.getElementById('history-project-select');
       const chosen = projectSelect ? projectSelect.value : '';
       if (!chosen) {
-        pendingList.innerHTML = '<div class="history-empty">Select a Project/Dept above</div>';
-        totalList.innerHTML = '<div class="history-empty">Select a Project/Dept above</div>';
+        pendingList.innerHTML = '<div class="history-empty">Choose a project or department above</div>';
+        totalList.innerHTML = '';
         return;
       }
       scoped = records.filter(r => sameName(r.project, chosen));
@@ -1263,11 +1581,11 @@
       : '';
 
     pendingList.innerHTML = offlineNote + (pending.length
-      ? pending.map(historyRowHtml).join('')
+      ? pending.map(r => historyRowHtml(r, false)).join('')
       : '<div class="history-empty">No pending requests yet</div>');
 
     totalList.innerHTML = total.length
-      ? total.map(historyRowHtml).join('')
+      ? total.map(r => historyRowHtml(r, false)).join('')
       : '<div class="history-empty">Nothing logged yet</div>';
   }
 
@@ -1335,11 +1653,18 @@
       }
 
       btn.disabled = true;
-      btn.textContent = 'CHECKING…';
+      btn.classList.add('loading');
+      btn.innerHTML = '<span class="spinner" aria-hidden="true"></span> CHECKING…';
+      // Apps Script can take a few seconds to wake up; say so instead of looking stuck.
+      const slowTimer = setTimeout(() => { err.className = 'login-error info'; err.textContent = 'Waking up the inventory sheet… this can take a few seconds.'; }, 2500);
 
       const result = await fetchIdLookup(idValue);
 
+      clearTimeout(slowTimer);
+      err.className = 'login-error';
+      err.textContent = '';
       btn.disabled = false;
+      btn.classList.remove('loading');
       btn.textContent = 'ENTER';
 
       if (result.status === 'NOT_CONFIGURED') {
@@ -1351,11 +1676,12 @@
         return;
       }
       if (result.status === 'ERROR') {
-        err.textContent = 'Something went wrong. Please try again.';
+        err.textContent = result.message || 'Something went wrong. Please try again.';
+        if (/access code/i.test(result.message || '')) document.getElementById('login-connection').open = true;
         return;
       }
       if (!result.found) {
-        err.textContent = 'ID number not found in the Celadon member list.';
+        err.textContent = 'ID number not found in the Celadon member list. Check the number, or ask an officer to add you.';
         return;
       }
 
@@ -1366,12 +1692,23 @@
       renderActForSelects();
       input.value = '';
       showView('home');
+      loadInventory(); // get the item list ready while they look at Home
     }
+
+    // Connection settings on the login screen (an access code, if the
+    // officers turned one on — otherwise nobody new could log in).
+    const codeSave = document.getElementById('login-code-save');
+    if (codeSave) codeSave.addEventListener('click', () => {
+      saveInventoryToken(document.getElementById('login-code-input').value.trim());
+      showToast('Access code saved');
+      attemptLogin();
+    });
 
     btn.addEventListener('click', attemptLogin);
     input.addEventListener('keydown', (e) => {
       if (e.key === 'Enter') attemptLogin();
     });
+    input.addEventListener('input', () => { input.value = input.value.replace(/\D/g, '').slice(0, 6); });
   }
 
   /* ---------------- Home (page 1 layout) ---------------- */
@@ -1438,6 +1775,14 @@
   function performLogout() {
     clearLogin();
     state.lastId = null;
+    state.cart = {};
+    state.actingAs = '';
+    try {
+      ['cela_cart_v2', 'cela_acting_as', 'cela_history_cache'].forEach(k => localStorage.removeItem(k));
+    } catch(e) {}
+    updateCartBadge();
+    applyTheme('');
+    dashState.records = [];
     const loginInput = document.getElementById('login-id-input');
     const loginErr = document.getElementById('login-error');
     if (loginInput) loginInput.value = '';
@@ -1447,53 +1792,187 @@
 
   /* ---------------- Inventory / catalog ---------------- */
 
-  function renderCatalogSkeleton() {
-    const container = document.getElementById('catalog-container');
-    if (!container || state.inventory.length) return; // only show on a genuinely empty first load
-    const grid = state.catalogFormat === 'grid';
-    container.className = grid ? 'item-grid' : 'item-list';
-    const card = grid
-      ? '<div class="item-card skeleton-card skeleton"><div class="skeleton-thumb"></div><div class="skeleton-line"></div><div class="skeleton-line w60"></div></div>'
-      : '<div class="item-row skeleton-row skeleton"><div class="skeleton-thumb"></div><div class="skeleton-lines"><div class="skeleton-line"></div><div class="skeleton-line w40"></div></div></div>';
-    container.innerHTML = card.repeat(grid ? 9 : 5);
+  /* ---------------- Categories ----------------
+     The sheet's Type column, shown under friendlier names. Merch (from the
+     Celamerch tab) gets its own. Anything new in the sheet still shows up,
+     under its own Type name. */
+  const CATEGORY_DEFS = [
+    { key: 'stationery', label: 'Stationery', icon: '✏️', type: 'Office Supplies' },
+    { key: 'art', label: 'Art & Craft', icon: '🎨', type: 'Art & Craft Supplies' },
+    { key: 'electronics', label: 'Lights & Electronics', icon: '💡', type: 'Electronics & Lighting' },
+    { key: 'decor', label: 'Decor & Props', icon: '🏮', type: 'Decor & Props' },
+    { key: 'signage', label: 'Signs & Displays', icon: '🪧', type: 'Signage & Displays' },
+    { key: 'kitchen', label: 'Kitchen', icon: '🍳', type: 'Kitchen & Food Prep' },
+    { key: 'tableware', label: 'Tableware', icon: '🍽️', type: 'Tableware & Disposables' },
+    { key: 'bags', label: 'Bags & Boxes', icon: '👜', type: 'Bags & Storage' },
+    { key: 'cloth', label: 'Cloth & Textiles', icon: '🧵', type: 'Cloth & Textiles' },
+    { key: 'games', label: 'Games', icon: '🎲', type: 'Games' },
+    { key: 'toiletries', label: 'Toiletries', icon: '🧴', type: 'Toiletries & Hygiene' },
+    { key: 'food', label: 'Food', icon: '🍪', type: 'Food' },
+    { key: 'merch', label: 'Merch', icon: '👕', type: '' }
+  ];
+
+  function categoryOf(item) {
+    if (item.source === 'merch' || item.category === 'Merch') return CATEGORY_DEFS.find(c => c.key === 'merch');
+    const def = CATEGORY_DEFS.find(c => c.type && sameName(c.type, item.type));
+    if (def) return def;
+    const label = String(item.type || '').trim() || 'Other';
+    return { key: 'type:' + label.toLowerCase(), label, icon: '📦' };
   }
 
-  function loadInventory() {
-    renderCatalogSkeleton();
+  // Equipment & event props come back (Borrow); supplies, sponsor goods and
+  // merch don't (Use up).
+  function defaultAction(item) {
+    const kind = String(item.kind || '').toLowerCase();
+    if (item.source === 'merch' || /suppl|sponsor/.test(kind) || item.source === 'consumable') return 'CONSUMING';
+    return 'BORROWING';
+  }
+
+  const ACTIONS = {
+    BORROWING: { label: 'Borrow', verb: 'Borrowed', hint: 'Bring it back after' },
+    CONSUMING: { label: 'Use up', verb: 'Used up', hint: "Won't come back" },
+    RESTOCKING: { label: 'Add stock', verb: 'Stock added', hint: 'Putting more in' }
+  };
+
+  // How many are actually in the org room right now (sheet count minus
+  // what's borrowed). null = no number in the sheet ("*", blank).
+  function availableQty(item) {
+    if (item.qtyAvailable == null) return null;
+    return Math.max(0, item.qtyAvailable - (item.out || 0));
+  }
+
+  function availabilityText(item) {
+    const avail = availableQty(item);
+    const unit = item.unit ? ' ' + item.unit : '';
+    if (/^\*$/.test(String(item.qtyRaw || '').trim())) return 'Plenty in the org room';
+    if (avail == null) return 'Count not recorded';
+    if (item.out) return `${avail} of ${item.qtyAvailable}${unit} in the org room · ${item.out} out`;
+    return `${avail}${unit} in the org room`;
+  }
+
+  // Problems worth flagging before someone takes an item.
+  function itemWarnings(item, qty, action) {
+    const w = [];
+    if (action === 'RESTOCKING') return w;
+    const avail = availableQty(item);
+    if (/^missing$/i.test(item.status)) w.push('Marked Missing in the sheet');
+    else if (/^out$/i.test(item.status) && !item.out) w.push('Marked Out in the sheet, so it may not be in the org room');
+    if (avail != null && qty > avail) w.push(avail === 0 ? 'None left right now' : `Only ${avail} left`);
+    if (item.expiry && new Date(item.expiry) < new Date()) w.push('Past its expiry date');
+    return w;
+  }
+
+  /* ---------------- Inventory loading ----------------
+     Shows the last saved copy straight away, then refreshes in the
+     background (Apps Script can take a few seconds to answer). */
+  let inventoryLoading = false;
+  let inventorySyncedAt = 0;
+
+  function readInventoryCache() {
+    try { return JSON.parse(localStorage.getItem('cela_inventory_cache') || 'null'); } catch(e) { return null; }
+  }
+
+  function setSyncNote(text, busy) {
+    const el = document.getElementById('catalog-sync');
+    if (!el) return;
+    el.textContent = text || '';
+    el.classList.toggle('busy', !!busy);
+  }
+
+  function relativeTime(ts) {
+    const mins = Math.round((Date.now() - ts) / 60000);
+    if (mins < 1) return 'just now';
+    if (mins < 60) return mins + ' min ago';
+    const hrs = Math.round(mins / 60);
+    return hrs < 24 ? hrs + ' hr ago' : new Date(ts).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+  }
+
+  function loadInventory(force) {
+    if (!state.inventory.length) {
+      const cache = readInventoryCache();
+      if (cache && Array.isArray(cache.items) && cache.items.length) {
+        state.inventory = cache.items;
+        inventorySyncedAt = cache.syncedAt || 0;
+      }
+    }
+    renderCategoryChips();
+    renderDeptFilter();
+    renderCatalog();
+    // Don't refetch on every tab switch; 30s is fresh enough.
+    if (inventoryLoading || (!force && Date.now() - inventorySyncedAt < 30000 && state.inventory.length)) return;
+    inventoryLoading = true;
+    setSyncNote(state.inventory.length ? 'Updating…' : '', true);
     google.script.run
       .withSuccessHandler(items => {
-        state.inventory = items || [];
+        inventoryLoading = false;
+        if (Array.isArray(items) && items.length) {
+          state.inventory = items;
+          inventorySyncedAt = window.__celaInventoryDebugError ? inventorySyncedAt : Date.now();
+          pruneCart();
+        }
+        setSyncNote(window.__celaInventoryDebugError ? 'Showing saved copy' : 'Updated ' + relativeTime(Date.now()));
         renderCategoryChips();
+        renderDeptFilter();
         renderCatalog();
+        if (state.view === 'cart') renderCart();
       })
-      .withFailureHandler(err => showToast(err.message || 'Could not load inventory', true))
+      .withFailureHandler(err => {
+        inventoryLoading = false;
+        setSyncNote('Could not refresh');
+        showToast(err.message || 'Could not load items', true);
+      })
       .getInventory();
   }
 
-  // Category chips let people jump straight to a section of the catalog
-  // instead of scrolling or guessing a search term — built from whatever
-  // categories actually exist in the sheet right now, so it never goes
-  // stale relative to the data.
+  // Cart lines whose item vanished from the sheet are dropped; the rest get
+  // the fresh item data (counts, status).
+  function pruneCart() {
+    let dropped = 0;
+    Object.keys(state.cart).forEach(id => {
+      const fresh = state.inventory.find(i => i.id === id);
+      if (fresh) state.cart[id].item = fresh;
+      else { delete state.cart[id]; dropped++; }
+    });
+    if (dropped) showToast(dropped + (dropped === 1 ? ' item was' : ' items were') + ' removed from your cart (no longer in the sheet)', true);
+    saveCart();
+    updateCartBadge();
+  }
+
   function renderCategoryChips() {
     const row = document.getElementById('category-chip-row');
     if (!row) return;
-    const categories = Array.from(new Set(
-      state.inventory.map(i => (i.category || '').trim()).filter(Boolean)
-    )).sort((a, b) => a.localeCompare(b));
-
-    if (!categories.length) { row.innerHTML = ''; return; }
-    if (!categories.includes(state.catalogCategory)) state.catalogCategory = 'all';
-
-    const chip = (value, label) => `<button type="button" class="category-chip${state.catalogCategory === value ? ' active' : ''}" data-category="${escapeAttr(value)}">${escapeHtml(label)}</button>`;
-    row.innerHTML = chip('all', 'All') + categories.map(c => chip(c, c)).join('');
-
+    const counts = {};
+    const defs = {};
+    state.inventory.forEach(i => {
+      const c = categoryOf(i);
+      counts[c.key] = (counts[c.key] || 0) + 1;
+      defs[c.key] = c;
+    });
+    const order = CATEGORY_DEFS.map(c => c.key);
+    const keys = Object.keys(counts).sort((a, b) => {
+      const ia = order.indexOf(a), ib = order.indexOf(b);
+      return (ia < 0 ? 99 : ia) - (ib < 0 ? 99 : ib) || defs[a].label.localeCompare(defs[b].label);
+    });
+    if (!keys.length) { row.innerHTML = ''; return; }
+    if (state.catalogCategory !== 'all' && !counts[state.catalogCategory]) state.catalogCategory = 'all';
+    const chip = (key, label, icon, n) => `<button type="button" class="category-chip${state.catalogCategory === key ? ' active' : ''}" data-category="${escapeHtml(key)}" aria-pressed="${state.catalogCategory === key}">${icon ? `<span class="chip-icon" aria-hidden="true">${icon}</span>` : ''}${escapeHtml(label)}<span class="chip-n">${n}</span></button>`;
+    row.innerHTML = chip('all', 'All', '', state.inventory.length) + keys.map(k => chip(k, defs[k].label, defs[k].icon, counts[k])).join('');
     row.querySelectorAll('.category-chip').forEach(btn => {
       btn.addEventListener('click', () => {
         state.catalogCategory = btn.dataset.category;
-        row.querySelectorAll('.category-chip').forEach(b => b.classList.toggle('active', b === btn));
+        renderCategoryChips();
         renderCatalog();
       });
     });
+  }
+
+  function renderDeptFilter() {
+    const sel = document.getElementById('catalog-dept');
+    if (!sel) return;
+    const depts = Array.from(new Set(state.inventory.map(i => i.category).filter(Boolean))).sort();
+    if (state.catalogDept !== 'all' && !depts.includes(state.catalogDept)) state.catalogDept = 'all';
+    sel.innerHTML = '<option value="all">All departments</option>' + depts.map(d => `<option value="${escapeHtml(d)}">${escapeHtml(d)}</option>`).join('');
+    sel.value = state.catalogDept;
   }
 
   function loadProjectOptions() {
@@ -1501,14 +1980,12 @@
       .withSuccessHandler(options => {
         state.projectOptions = Array.isArray(options) ? options.filter(o => !/^personal$/i.test(o)) : [];
         renderActForSelects();
-
         const historySelect = document.getElementById('history-project-select');
         if (historySelect) {
-          const placeholder = historySelect.querySelector('option[value=""]');
-          historySelect.innerHTML = (placeholder ? placeholder.outerHTML : '<option value="">Project/Dept</option>') +
-            state.projectOptions
-              .map(opt => `<option value="${escapeHtml(opt)}">${escapeHtml(opt)}</option>`)
-              .join('');
+          const keep = historySelect.value;
+          historySelect.innerHTML = '<option value="">Choose a project or department</option>' +
+            state.projectOptions.map(opt => `<option value="${escapeHtml(opt)}">${escapeHtml(opt)}</option>`).join('');
+          if (keep) historySelect.value = keep;
         }
       })
       .withFailureHandler(() => {})
@@ -1521,10 +1998,12 @@
 
     const searchInput = document.getElementById('catalog-search');
     const clearBtn = document.getElementById('catalog-search-clear');
+    let searchTimer = null;
     searchInput.addEventListener('input', (e) => {
       state.catalogSearch = e.target.value;
       clearBtn.style.display = e.target.value ? 'flex' : 'none';
-      renderCatalog();
+      clearTimeout(searchTimer);
+      searchTimer = setTimeout(renderCatalog, 120);
     });
     clearBtn.addEventListener('click', () => {
       searchInput.value = '';
@@ -1533,10 +2012,24 @@
       renderCatalog();
       searchInput.focus();
     });
-
     document.getElementById('catalog-sort').addEventListener('change', (e) => {
       state.catalogSort = e.target.value;
       renderCatalog();
+    });
+    document.getElementById('catalog-dept').addEventListener('change', (e) => {
+      state.catalogDept = e.target.value;
+      renderCatalog();
+    });
+    document.getElementById('catalog-container').addEventListener('click', (e) => {
+      const cmd = e.target.closest('[data-cmd]');
+      if (cmd) {
+        if (cmd.dataset.cmd === 'reload-items') loadInventory(true);
+        if (cmd.dataset.cmd === 'clear-filters') clearCatalogFilters();
+        if (cmd.dataset.cmd === 'go-add') showView('add');
+        return;
+      }
+      const card = e.target.closest('[data-item]');
+      if (card) openItemSheet(card.dataset.item);
     });
   }
 
@@ -1544,115 +2037,129 @@
     state.catalogFormat = format;
     document.getElementById('format-grid-btn').classList.toggle('active', format === 'grid');
     document.getElementById('format-list-btn').classList.toggle('active', format === 'list');
+    document.getElementById('format-grid-btn').setAttribute('aria-pressed', format === 'grid');
+    document.getElementById('format-list-btn').setAttribute('aria-pressed', format === 'list');
     renderCatalog();
   }
 
-  // Returns state.inventory filtered by the search box (matches title,
-  // category, location, or notes) and sorted per the sort dropdown —
-  // Category uses the sheet's own Category column, per request.
   function getVisibleInventory() {
     const q = state.catalogSearch.trim().toLowerCase();
     let items = state.inventory;
-
     if (state.catalogCategory && state.catalogCategory !== 'all') {
-      items = items.filter(item => (item.category || '').trim() === state.catalogCategory);
+      items = items.filter(item => categoryOf(item).key === state.catalogCategory);
     }
-
+    if (state.catalogDept && state.catalogDept !== 'all') {
+      items = items.filter(item => item.category === state.catalogDept);
+    }
     if (q) {
+      const words = q.split(/\s+/).filter(Boolean);
       items = items.filter(item => {
-        const haystack = [item.title, item.category, item.type, item.event, item.location, item.notes]
+        const haystack = [item.title, item.category, item.type, categoryOf(item).label, item.event, item.location, item.notes]
           .filter(Boolean).join(' ').toLowerCase();
-        return haystack.includes(q);
+        return words.every(w => haystack.includes(w));
       });
     }
-
     const sorted = items.slice();
+    const order = CATEGORY_DEFS.map(c => c.key);
+    const catIndex = i => { const k = order.indexOf(categoryOf(i).key); return k < 0 ? 99 : k; };
     if (state.catalogSort === 'name') {
       sorted.sort((a, b) => a.title.localeCompare(b.title));
-    } else if (state.catalogSort === 'category') {
-      sorted.sort((a, b) => (a.category || '').localeCompare(b.category || '') || a.title.localeCompare(b.title));
+    } else if (state.catalogSort === 'available') {
+      const n = i => { const a = availableQty(i); return a == null ? 1e6 : a; };
+      sorted.sort((a, b) => n(b) - n(a) || a.title.localeCompare(b.title));
     } else if (state.catalogSort === 'location') {
-      sorted.sort((a, b) => (a.location || '').localeCompare(b.location || '') || a.title.localeCompare(b.title));
+      sorted.sort((a, b) => (a.location || '~').localeCompare(b.location || '~') || a.title.localeCompare(b.title));
+    } else {
+      sorted.sort((a, b) => catIndex(a) - catIndex(b) || a.title.localeCompare(b.title));
     }
     return sorted;
   }
 
+  function renderCatalogSkeleton(container) {
+    const grid = state.catalogFormat === 'grid';
+    container.className = grid ? 'item-grid' : 'item-list';
+    const card = grid
+      ? '<div class="item-card skeleton-card skeleton"><div class="skeleton-line w40"></div><div class="skeleton-line"></div><div class="skeleton-line w60"></div></div>'
+      : '<div class="item-row skeleton-row skeleton"><div class="skeleton-lines"><div class="skeleton-line"></div><div class="skeleton-line w40"></div></div></div>';
+    container.innerHTML = `<div class="loading-card" style="grid-column:1/-1;"><img src="brand/ayi/ayi.png" alt=""><div><b>Getting the org room list…</b><br>The first load can take a few seconds.</div></div>` + card.repeat(grid ? 6 : 4);
+  }
+
   function renderCatalog() {
     const container = document.getElementById('catalog-container');
-    const debugMsg = window.__celaInventoryDebugError;
-    const debugHtml = debugMsg
-      ? `<div style="grid-column:1/-1;background:rgba(255,107,107,0.08);border:1px solid rgba(255,107,107,0.3);border-radius:12px;padding:14px;font-size:11px;font-family:monospace;color:#ffb3b3;white-space:pre-wrap;word-break:break-word;margin-bottom:10px;"><img class="svg-icon icon-inline" src="icons/ui/warning.svg" alt="">Inventory fetch failed — showing demo items below.\n\n${escapeHtml(debugMsg)}</div>`
-      : '';
-
+    if (!container) return;
     const countEl = document.getElementById('catalog-result-count');
 
     if (!state.inventory.length) {
-      container.innerHTML = debugHtml + '<div class="empty-state"><img class="svg-icon" src="icons/ui/archive-box.svg" alt="">Inventory is empty</div>';
-      if (countEl) countEl.textContent = 'Tap an item to add it to your cart';
+      if (inventoryLoading || !inventorySyncedAt) { renderCatalogSkeleton(container); return; }
+      container.className = 'item-list';
+      container.innerHTML = '<div class="empty-state"><img class="svg-icon" src="icons/ui/archive-box.svg" alt="">No items in the sheet yet.</div>';
       return;
     }
 
-    const visible = getVisibleInventory();
-    const filtered = !!state.catalogSearch.trim() || state.catalogCategory !== 'all';
+    const notice = window.__celaInventoryDebugError
+      ? `<div class="notice warn" style="grid-column:1/-1;">Couldn't reach the inventory sheet. ${readInventoryCache() ? 'Showing the last saved copy.' : 'Showing sample items.'} <button type="button" class="text-link" data-cmd="reload-items">Try again</button></div>`
+      : '';
 
-    if (countEl) {
-      countEl.textContent = filtered
-        ? visible.length + (visible.length === 1 ? ' item found' : ' items found')
-        : 'Tap an item to add it to your cart';
-    }
+    const visible = getVisibleInventory();
+    const filtered = !!state.catalogSearch.trim() || state.catalogCategory !== 'all' || state.catalogDept !== 'all';
+    if (countEl) countEl.textContent = filtered ? visible.length + (visible.length === 1 ? ' item' : ' items') : state.inventory.length + ' items · tap one for details';
 
     if (!visible.length) {
-      container.className = state.catalogFormat === 'grid' ? 'item-grid' : 'item-list';
-      container.innerHTML = debugHtml + `
-        <div class="empty-state" style="grid-column:1/-1;">
-          <img class="svg-icon" src="icons/ui/search.svg" alt="">
-          No items match${state.catalogCategory !== 'all' ? ' "' + escapeHtml(state.catalogCategory) + '"' : ''}${state.catalogSearch.trim() ? ' "' + escapeHtml(state.catalogSearch.trim()) + '"' : ''}
-          <button type="button" class="btn-secondary" style="margin-top:14px;max-width:200px;" onclick="clearCatalogFilters()">Clear filters</button>
+      container.className = 'item-list';
+      container.innerHTML = notice + `
+        <div class="empty-state">
+          <img src="brand/ayi/ayi.png" alt="" class="empty-ayi">
+          Nothing matches${state.catalogSearch.trim() ? ' "' + escapeHtml(state.catalogSearch.trim()) + '"' : ''}.
+          <button type="button" class="btn-secondary" style="margin-top:14px;max-width:220px;" data-cmd="clear-filters">Clear filters</button>
+          <button type="button" class="text-link" style="margin-top:6px;" data-cmd="go-add">Not listed? Add it to the inventory</button>
         </div>`;
       return;
     }
 
-    if (state.catalogFormat === 'grid') {
-      container.className = 'item-grid';
-      container.innerHTML = debugHtml + visible.map(item => `
-        <div class="item-card" onclick="addToCart('${escapeAttr(item.id)}')">
-          <div class="item-card-top"><span class="item-cat">${escapeHtml(item.category)}</span>${cartQty(item.id) > 0 ? `<span class="in-cart-dot">${cartQty(item.id)}</span>` : ''}</div>
-          <div class="item-title">${escapeHtml(item.title)}</div>
-          <div class="item-qty">${escapeHtml(item.qtyDisplay != null ? item.qtyDisplay : item.qtyAvailable)}${itemBadges(item)}</div>
-          ${locationLine(item.location)}
-        </div>
-      `).join('');
-    } else {
-      container.className = 'item-list';
-      container.innerHTML = debugHtml + visible.map(item => `
-        <div class="item-row" onclick="addToCart('${escapeAttr(item.id)}')">
-          <div class="item-info">
-            <div class="item-title">${escapeHtml(item.title)}${itemBadges(item)}</div>
-            <div class="item-qty"><span class="item-cat">${escapeHtml(item.category)}</span> · ${escapeHtml(item.qtyDisplay || '—')}${item.notes ? ' · ' + escapeHtml(item.notes) : ''}</div>
+    const grid = state.catalogFormat === 'grid';
+    container.className = grid ? 'item-grid' : 'item-list';
+    container.innerHTML = notice + visible.map(item => {
+      const cat = categoryOf(item);
+      const inCart = cartQty(item.id);
+      const avail = availableQty(item);
+      const none = avail === 0 && item.qtyAvailable != null;
+      return grid ? `
+        <button type="button" class="item-card${none ? ' is-none' : ''}" data-item="${escapeHtml(item.id)}" aria-label="${escapeHtml(item.title)}, ${escapeHtml(availabilityText(item))}">
+          <span class="item-card-top"><span class="item-cat"><span aria-hidden="true">${cat.icon}</span> ${escapeHtml(cat.label)}</span>${inCart ? `<span class="in-cart-dot" title="In your cart">${inCart}</span>` : ''}</span>
+          <span class="item-title">${escapeHtml(item.title)}</span>
+          <span class="item-qty">${escapeHtml(item.qtyDisplay)}${itemBadges(item)}</span>
+          <span class="item-foot"><span class="dept-tag">${escapeHtml(item.category)}</span>${locationLine(item.location)}</span>
+        </button>` : `
+        <button type="button" class="item-row${none ? ' is-none' : ''}" data-item="${escapeHtml(item.id)}">
+          <span class="row-icon" aria-hidden="true">${cat.icon}</span>
+          <span class="item-info">
+            <span class="item-title">${escapeHtml(item.title)}${itemBadges(item)}</span>
+            <span class="item-qty"><span class="dept-tag">${escapeHtml(item.category)}</span> ${escapeHtml(item.qtyDisplay)}</span>
             ${locationLine(item.location)}
-          </div>
-          ${cartQty(item.id) > 0 ? `<div class="in-cart-badge">${cartQty(item.id)} in cart</div>` : ''}
-        </div>
-      `).join('');
-    }
+          </span>
+          ${inCart ? `<span class="in-cart-badge">${inCart} in cart</span>` : '<span class="row-chev" aria-hidden="true">›</span>'}
+        </button>`;
+    }).join('');
   }
 
   function clearCatalogFilters() {
     state.catalogSearch = '';
     state.catalogCategory = 'all';
+    state.catalogDept = 'all';
     const searchInput = document.getElementById('catalog-search');
     const clearBtn = document.getElementById('catalog-search-clear');
     if (searchInput) searchInput.value = '';
     if (clearBtn) clearBtn.style.display = 'none';
     renderCategoryChips();
+    renderDeptFilter();
     renderCatalog();
   }
 
-  // Small status chips on catalog cards: borrowed count, hand-set Status
-  // (Out/Missing), and Consumables expiry.
   function itemBadges(item) {
     const badges = [];
+    const avail = availableQty(item);
     if (item.out) badges.push(`<span class="out-badge">${item.out} out</span>`);
+    if (avail === 0 && item.qtyAvailable != null) badges.push('<span class="out-badge none">None left</span>');
     if (/^(out|missing)$/i.test(item.status) && !item.out) badges.push(`<span class="out-badge status">${escapeHtml(item.status)}</span>`);
     if (item.expiry) {
       const days = Math.round((new Date(item.expiry) - new Date()) / 86400000);
@@ -1662,189 +2169,297 @@
     return badges.length ? ' ' + badges.join(' ') : '';
   }
 
+  /* ---------------- Item detail sheet ---------------- */
+  const sheetState = { id: null, qty: 1, action: 'BORROWING' };
+
+  function openItemSheet(itemId) {
+    const item = state.inventory.find(i => i.id === itemId);
+    if (!item) return;
+    const line = state.cart[itemId];
+    sheetState.id = itemId;
+    sheetState.qty = line ? line.qty : 1;
+    sheetState.action = line ? line.action : defaultAction(item);
+    renderItemSheet();
+    const sheet = document.getElementById('item-sheet');
+    sheet.classList.add('show');
+    sheet.setAttribute('aria-hidden', 'false');
+    document.body.classList.add('sheet-open');
+    setTimeout(() => { const b = document.getElementById('sheet-add'); if (b) b.focus(); }, 50);
+  }
+
+  function closeItemSheet() {
+    const sheet = document.getElementById('item-sheet');
+    if (!sheet || !sheet.classList.contains('show')) return;
+    sheet.classList.remove('show');
+    sheet.setAttribute('aria-hidden', 'true');
+    document.body.classList.remove('sheet-open');
+  }
+
+  function renderItemSheet() {
+    const item = state.inventory.find(i => i.id === sheetState.id);
+    if (!item) return closeItemSheet();
+    const cat = categoryOf(item);
+    const inCart = !!state.cart[item.id];
+    const warnings = itemWarnings(item, sheetState.qty, sheetState.action);
+    const where = [item.location, item.spot && item.spot !== item.location ? item.spot : ''].filter(Boolean).join(' · ');
+    document.getElementById('sheet-body').innerHTML = `
+      <div class="sheet-eyebrow"><span aria-hidden="true">${cat.icon}</span> ${escapeHtml(cat.label)} · ${escapeHtml(item.category)}${item.kind ? ' · ' + escapeHtml(item.kind) : ''}</div>
+      <h3 class="sheet-title" id="sheet-title">${escapeHtml(item.title)}</h3>
+      <div class="sheet-avail${availableQty(item) === 0 && item.qtyAvailable != null ? ' none' : ''}">${escapeHtml(availabilityText(item))}</div>
+      <dl class="sheet-facts">
+        <div><dt>Where</dt><dd>${locationLine(item.location)}${item.spot && item.spot !== item.location ? `<div class="sheet-spot">${escapeHtml(item.spot)}</div>` : ''}</dd></div>
+        ${item.event ? `<div><dt>Event</dt><dd>${escapeHtml(item.event)}</dd></div>` : ''}
+        ${item.expiry ? `<div><dt>Expires</dt><dd>${new Date(item.expiry).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })}</dd></div>` : ''}
+      </dl>
+      ${item.sheetNotes ? `<div class="sheet-notes"><b>Notes</b><br>${escapeHtml(item.sheetNotes)}</div>` : ''}
+      <div class="field-label" style="margin-top:14px;">What are you doing?</div>
+      <div class="seg-control" role="radiogroup" aria-label="Action">
+        ${Object.keys(ACTIONS).map(a => `<button type="button" role="radio" aria-checked="${sheetState.action === a}" class="${sheetState.action === a ? 'active' : ''}" data-action="${a}">${ACTIONS[a].label}<small>${ACTIONS[a].hint}</small></button>`).join('')}
+      </div>
+      <div class="sheet-qty-row">
+        <span class="field-label" style="margin:0;">How many?</span>
+        <div class="qty-stepper">
+          <button type="button" class="qty-btn" data-step="-1" aria-label="Fewer" ${sheetState.qty <= 1 ? 'disabled' : ''}><img class="svg-icon" src="icons/ui/minus.svg" alt=""></button>
+          <input type="number" min="1" max="9999" inputmode="numeric" id="sheet-qty" value="${sheetState.qty}" aria-label="Quantity">
+          <button type="button" class="qty-btn" data-step="1" aria-label="More"><img class="svg-icon" src="icons/ui/plus.svg" alt=""></button>
+        </div>
+      </div>
+      ${warnings.length ? `<div class="notice warn">${warnings.map(escapeHtml).join('<br>')}${sheetState.action !== 'RESTOCKING' ? '<br><span class="notice-sub">You can still request it. Check with the department first.</span>' : ''}</div>` : ''}
+      <button type="button" class="btn-primary" id="sheet-add">${inCart ? 'UPDATE CART' : 'ADD TO CART'}</button>
+      ${inCart ? '<button type="button" class="btn-secondary" id="sheet-remove">Remove from cart</button>' : ''}`;
+
+    const body = document.getElementById('sheet-body');
+    body.querySelectorAll('[data-action]').forEach(b => b.addEventListener('click', () => { sheetState.action = b.dataset.action; renderItemSheet(); }));
+    body.querySelectorAll('[data-step]').forEach(b => b.addEventListener('click', () => {
+      sheetState.qty = clampQty(sheetState.qty + Number(b.dataset.step));
+      renderItemSheet();
+    }));
+    const qtyInput = document.getElementById('sheet-qty');
+    qtyInput.addEventListener('change', () => { sheetState.qty = clampQty(qtyInput.value); renderItemSheet(); });
+    document.getElementById('sheet-add').addEventListener('click', () => {
+      sheetState.qty = clampQty(document.getElementById('sheet-qty').value);
+      state.cart[item.id] = { item, qty: sheetState.qty, action: sheetState.action };
+      saveCart();
+      updateCartBadge();
+      closeItemSheet();
+      renderCatalog();
+      showToast(`${item.title} × ${sheetState.qty} · ${ACTIONS[sheetState.action].label}`, false, { label: 'View cart', onClick: () => showView('cart') });
+    });
+    const rm = document.getElementById('sheet-remove');
+    if (rm) rm.addEventListener('click', () => { removeFromCart(item.id); closeItemSheet(); renderCatalog(); });
+  }
+
+  function clampQty(v) {
+    const n = parseInt(v, 10);
+    return Math.min(9999, Math.max(1, isNaN(n) ? 1 : n));
+  }
+
+  /* ---------------- Cart ----------------
+     { itemId: { item, qty, action } } — kept in localStorage so a reload or
+     an accidental close doesn't lose it. */
+  const CART_KEY = 'cela_cart_v2';
+
+  function saveCart() {
+    try {
+      const slim = {};
+      Object.keys(state.cart).forEach(id => { slim[id] = { qty: state.cart[id].qty, action: state.cart[id].action, item: state.cart[id].item }; });
+      localStorage.setItem(CART_KEY, JSON.stringify(slim));
+    } catch(e) {}
+  }
+
+  function restoreCart() {
+    try {
+      const saved = JSON.parse(localStorage.getItem(CART_KEY) || '{}');
+      Object.keys(saved).forEach(id => {
+        const line = saved[id];
+        if (line && line.item && ACTIONS[line.action]) state.cart[id] = { item: line.item, qty: clampQty(line.qty), action: line.action };
+      });
+    } catch(e) {}
+  }
+
   function cartQty(itemId) {
     return state.cart[itemId] ? state.cart[itemId].qty : 0;
   }
 
-  function addToCart(itemId) {
-    const item = state.inventory.find(i => i.id === itemId);
-    if (!item) return;
-    const current = state.cart[itemId] || { item: item, qty: 0 };
-    current.qty += 1;
-    state.cart[itemId] = current;
-    updateCartBadge();
-    showToast(item.title + ' added to cart');
-  }
-
-  function stepQty(itemId, delta) {
-    const item = state.inventory.find(i => i.id === itemId);
-    if (!item) return;
-    const current = state.cart[itemId] || { item: item, qty: 0 };
-    current.qty = Math.max(0, current.qty + delta);
-    if (current.qty === 0) {
-      delete state.cart[itemId];
-    } else {
-      state.cart[itemId] = current;
-    }
-    updateCartBadge();
-    renderCatalog();
-    if (state.view === 'cart') renderCart();
-  }
-
-  function setQty(itemId, value) {
-    const item = state.inventory.find(i => i.id === itemId);
-    if (!item) return;
-    const qty = Math.max(0, parseInt(value, 10) || 0);
-    if (qty === 0) {
-      delete state.cart[itemId];
-    } else {
-      state.cart[itemId] = { item: item, qty: qty };
-    }
+  function removeFromCart(itemId) {
+    const line = state.cart[itemId];
+    if (!line) return;
+    delete state.cart[itemId];
+    saveCart();
     updateCartBadge();
     if (state.view === 'cart') renderCart();
+    showToast(line.item.title + ' removed', false, { label: 'Undo', onClick: () => {
+      state.cart[itemId] = line; saveCart(); updateCartBadge(); if (state.view === 'cart') renderCart(); renderCatalog();
+    } });
   }
 
   function updateCartBadge() {
-    const count = Object.values(state.cart).reduce((sum, c) => sum + c.qty, 0);
-    const badge = document.getElementById('cart-badge');
-    if (count > 0) {
+    const count = Object.keys(state.cart).length;
+    [document.getElementById('cart-badge'), document.getElementById('nav-cart-badge')].forEach(badge => {
+      if (!badge) return;
       badge.textContent = count;
-      badge.style.display = 'flex';
-    } else {
-      badge.style.display = 'none';
-    }
+      badge.style.display = count > 0 ? 'flex' : 'none';
+    });
   }
-
-  /* ---------------- Cart view ---------------- */
 
   function renderCart() {
     const container = document.getElementById('cart-list');
+    const summary = document.getElementById('cart-summary');
     const entries = Object.values(state.cart);
     const checkoutBtn = document.getElementById('cart-checkout-btn');
 
     if (!entries.length) {
-      container.innerHTML = '<div class="empty-state"><img class="svg-icon" src="icons/ui/shopping-basket.svg" alt="">Your cart is empty</div>';
+      container.innerHTML = `<div class="empty-state"><img src="brand/ayi/ayi.png" alt="" class="empty-ayi">Your cart is empty.<br><span class="muted">Tap an item in Items to add it.</span></div>`;
+      summary.innerHTML = '';
       checkoutBtn.disabled = true;
       return;
     }
     checkoutBtn.disabled = false;
 
-    container.innerHTML = entries.map(({ item, qty }) => `
-      <div class="item-row">
-        <div class="item-info">
-          <div class="item-title">${escapeHtml(item.title)}</div>
-          <div class="item-qty"><span class="item-cat">${escapeHtml(item.category)}</span> · ${escapeHtml(item.qtyDisplay || '—')}</div>
-          ${locationLine(item.location)}
+    container.innerHTML = entries.map(({ item, qty, action }) => {
+      const warnings = itemWarnings(item, qty, action);
+      return `
+      <div class="cart-line" data-line="${escapeHtml(item.id)}">
+        <div class="cart-line-top">
+          <div class="item-info">
+            <div class="item-title">${escapeHtml(item.title)}</div>
+            <div class="item-qty"><span class="dept-tag">${escapeHtml(item.category)}</span> ${escapeHtml(availabilityText(item))}</div>
+          </div>
+          <button type="button" class="cart-remove" data-remove aria-label="Remove ${escapeHtml(item.title)}">×</button>
         </div>
-        <div class="qty-stepper">
-          <button class="qty-btn" onclick="stepQty('${escapeAttr(item.id)}', -1)" aria-label="Decrease quantity"><img class="svg-icon" src="icons/ui/minus.svg" alt=""></button>
-          <input type="number" min="0" value="${qty}" aria-label="Quantity"
-                 onchange="setQty('${escapeAttr(item.id)}', this.value)" />
-          <button class="qty-btn" onclick="stepQty('${escapeAttr(item.id)}', 1)" aria-label="Increase quantity"><img class="svg-icon" src="icons/ui/plus.svg" alt=""></button>
+        <div class="cart-line-controls">
+          <div class="seg-control small" role="radiogroup" aria-label="Action for ${escapeHtml(item.title)}">
+            ${Object.keys(ACTIONS).map(a => `<button type="button" role="radio" aria-checked="${action === a}" class="${action === a ? 'active' : ''}" data-action="${a}">${ACTIONS[a].label}</button>`).join('')}
+          </div>
+          <div class="qty-stepper">
+            <button type="button" class="qty-btn" data-step="-1" aria-label="Fewer" ${qty <= 1 ? 'disabled' : ''}><img class="svg-icon" src="icons/ui/minus.svg" alt=""></button>
+            <input type="number" min="1" max="9999" inputmode="numeric" value="${qty}" aria-label="Quantity" data-qty>
+            <button type="button" class="qty-btn" data-step="1" aria-label="More"><img class="svg-icon" src="icons/ui/plus.svg" alt=""></button>
+          </div>
         </div>
-      </div>
-    `).join('');
+        ${warnings.length ? `<div class="cart-warn">⚠ ${warnings.map(escapeHtml).join(' · ')}</div>` : ''}
+      </div>`;
+    }).join('');
+
+    const counts = {};
+    entries.forEach(e => { counts[e.action] = (counts[e.action] || 0) + 1; });
+    summary.innerHTML = `<div class="cart-summary">${Object.keys(ACTIONS).filter(a => counts[a]).map(a => `<span><b>${counts[a]}</b> to ${ACTIONS[a].label.toLowerCase()}</span>`).join('')}</div>`;
+
+    container.querySelectorAll('.cart-line').forEach(el => {
+      const id = el.dataset.line;
+      const line = state.cart[id];
+      el.querySelector('[data-remove]').addEventListener('click', () => removeFromCart(id));
+      el.querySelectorAll('[data-action]').forEach(b => b.addEventListener('click', () => { line.action = b.dataset.action; saveCart(); renderCart(); }));
+      el.querySelectorAll('[data-step]').forEach(b => b.addEventListener('click', () => { line.qty = clampQty(line.qty + Number(b.dataset.step)); saveCart(); renderCart(); }));
+      el.querySelector('[data-qty]').addEventListener('change', e => { line.qty = clampQty(e.target.value); saveCart(); renderCart(); });
+    });
   }
 
-  /* ---------------- Checkout view ---------------- */
-
-  const CASE_HINTS = {
-    BORROWING: 'Borrowing: taking items out of the org room for the project/department above. They stay under it until they\'re marked returned.',
-    CONSUMING: 'Using up: supplies that won\'t come back (e.g. tape, paper). The quantity is deducted from the sheet and charged to the project/department above.',
-    RETURNING: 'Returning: bringing back items borrowed for the project/department above. Clears its pending borrows. You can also tap "Mark returned" in Borrowed now.',
-    RESTOCKING: 'Adding stock: putting more of these items into the org room. Each item\'s Qty in the sheet goes up by the amount in your cart. For brand-new items, use Add to inventory instead.'
-  };
-
+  /* ---------------- Checkout ---------------- */
   function renderCheckout() {
-    document.getElementById('checkout-id-display').textContent =
-      state.lastId && state.lastId.idNumber ? state.lastId.idNumber : 'Not scanned yet';
-
+    const entries = Object.values(state.cart);
+    if (!entries.length) { showView('cart'); return; }
+    const who = state.lastId || {};
+    document.getElementById('checkout-who').innerHTML =
+      `<img src="${ayiFor(who.committee)}" alt=""><div><div class="muted">Logged in as</div><b>${escapeHtml(who.name || 'Member')}</b> <span class="muted">${escapeHtml(who.idNumber || '')}${who.committee ? ' · ' + escapeHtml(who.committee) : ''}</span></div>`;
     renderActForSelects();
 
-    const entries = Object.values(state.cart);
-    const tbody = document.getElementById('checkout-summary-body');
-    if (!entries.length) {
-      tbody.innerHTML = '<tr><td colspan="2">No items selected</td></tr>';
-    } else {
-      tbody.innerHTML = entries.map(({ item, qty }) => `
-        <tr><td>${escapeHtml(item.title)}</td><td>${qty}x</td></tr>
-      `).join('');
-    }
+    const groups = groupCart(entries);
+    document.getElementById('checkout-summary').innerHTML = groups.map(g => `
+      <div class="checkout-group">
+        <div class="checkout-group-head">${ACTIONS[g.action].label} <span class="muted">· ${g.action === 'BORROWING' ? 'due date is set when you submit' : ACTIONS[g.action].hint.toLowerCase()}</span></div>
+        ${g.lines.map(l => `<div class="checkout-row"><span>${escapeHtml(l.item.title)}</span><b>× ${l.qty}</b></div>`).join('')}
+      </div>`).join('');
+
+    const warnLines = entries.map(l => ({ l, w: itemWarnings(l.item, l.qty, l.action) })).filter(x => x.w.length);
+    document.getElementById('checkout-warnings').innerHTML = warnLines.length
+      ? `<div class="notice warn"><b>Heads up</b><br>${warnLines.map(x => escapeHtml(x.l.item.title) + ': ' + x.w.map(escapeHtml).join(', ')).join('<br>')}<br><span class="notice-sub">You can still submit. Please check with the department.</span></div>`
+      : '';
+    const btn = document.getElementById('submit-order-btn');
+    btn.textContent = groups.length > 1 ? `SUBMIT (${groups.length} REQUESTS)` : 'SUBMIT';
+  }
+
+  function groupCart(entries) {
+    return Object.keys(ACTIONS).map(action => ({ action, lines: entries.filter(e => e.action === action) })).filter(g => g.lines.length);
   }
 
   function bindCheckoutForm() {
     document.getElementById('submit-order-btn').addEventListener('click', submitOrder);
-
-    document.querySelectorAll('.case-btn').forEach(btn => {
-      btn.addEventListener('click', () => {
-        document.querySelectorAll('.case-btn').forEach(b => b.classList.remove('active'));
-        btn.classList.add('active');
-        state.checkoutCase = btn.dataset.case;
-        document.getElementById('case-hint').textContent = CASE_HINTS[state.checkoutCase];
-      });
-    });
+    document.getElementById('checkout-back-btn').addEventListener('click', () => showView('cart'));
+    document.getElementById('cart-checkout-btn').addEventListener('click', () => showView('checkout'));
+    document.getElementById('cart-more-btn').addEventListener('click', () => showView('catalog'));
+    document.getElementById('done-home-btn').addEventListener('click', () => showView('home'));
+    document.getElementById('done-more-btn').addEventListener('click', () => showView('catalog'));
+    document.getElementById('sheet-close').addEventListener('click', closeItemSheet);
+    document.getElementById('item-sheet').addEventListener('click', e => { if (e.target.id === 'item-sheet') closeItemSheet(); });
+    document.addEventListener('keydown', e => { if (e.key === 'Escape') closeItemSheet(); });
   }
 
-  function submitOrder() {
+  let submitting = false;
+  async function submitOrder() {
+    if (submitting) return; // no double submits
     const entries = Object.values(state.cart);
-    if (!state.lastId || !state.lastId.idNumber) {
-      showToast('Log in with your ID number first', true);
-      showView('home');
-      return;
-    }
-    if (!entries.length) {
-      showToast('Your cart is empty', true);
-      return;
-    }
-
-    const committee = document.getElementById('committee-input').value;
+    if (!state.lastId || !state.lastId.idNumber) { showToast('Log in with your ID number first', true); showView('login'); return; }
+    if (!entries.length) { showToast('Your cart is empty', true); return; }
     const project = document.getElementById('project-select').value;
-    if (!project) {
-      showToast('Choose the project or department this is for', true);
-      return;
-    }
-    const pointPerson = (state.lastId && state.lastId.name) ? state.lastId.name : state.lastId.idNumber;
+    if (!project) { showToast('Choose the project or department this is for', true); return; }
+    const committee = document.getElementById('committee-input').value.trim().slice(0, 120);
 
-    const payload = {
-      idNumber: state.lastId.idNumber,
-      caseType: state.checkoutCase, // BORROWING | CONSUMING | RETURNING
-      actingAs: project, // required: the project/department accountable for these items
-      project: project,
-      committee: committee,
-      items: entries.map(({ item, qty }) => ({
-        id: item.id,
-        ref: item.id, // the backend matches the exact sheet row by this
-        title: item.title,
-        qty: qty,
-        location: item.location || '',
-        // Note left on the item's quantity cell, e.g. "[BORROWING] - 2 MAF, Juan Dela Cruz"
-        comment: `[${state.checkoutCase}] - ${qty} ${project}, ${pointPerson}`
-      }))
-    };
-
+    submitting = true;
     const btn = document.getElementById('submit-order-btn');
     btn.disabled = true;
     btn.textContent = 'SUBMITTING…';
 
-    google.script.run
-      .withSuccessHandler((result) => {
-        if (result && result.queued) {
-          showToast('Saved offline — will sync automatically');
-        } else {
-          showToast(state.checkoutCase === 'RESTOCKING' ? 'Stock added' : 'Request submitted');
-        }
-        state.cart = {};
-        updateCartBadge();
-        btn.disabled = false;
-        btn.textContent = 'SUBMIT REQUEST';
-        showView('home');
-      })
-      .withFailureHandler(err => {
-        showToast(err.message || 'Could not submit request', true);
-        btn.disabled = false;
-        btn.textContent = 'SUBMIT REQUEST';
-      })
-      .submitOrder(payload);
+    const results = [];
+    for (const g of groupCart(entries)) {
+      const payload = {
+        idNumber: state.lastId.idNumber,
+        caseType: g.action,
+        actingAs: project,
+        project: project,
+        committee: committee,
+        items: g.lines.map(({ item, qty }) => ({ id: item.id, ref: item.id, title: item.title, qty, location: item.location || '' }))
+      };
+      try {
+        const result = await new Promise((resolve, reject) => {
+          google.script.run.withSuccessHandler(resolve).withFailureHandler(reject).submitOrder(payload);
+        });
+        results.push({ group: g, ok: true, queued: !!(result && result.queued), due: result && result.due, warnings: (result && result.warnings) || [] });
+        g.lines.forEach(l => delete state.cart[l.item.id]); // only clear what went through
+      } catch(err) {
+        results.push({ group: g, ok: false, error: err.message || 'Could not submit' });
+      }
+    }
+    saveCart();
+    updateCartBadge();
+    submitting = false;
+    btn.disabled = false;
+    btn.textContent = 'SUBMIT';
+    inventorySyncedAt = 0; // counts changed — refresh next time Items opens
+    renderDone(results, project);
+  }
+
+  function renderDone(results, project) {
+    const failed = results.filter(r => !r.ok);
+    const queued = results.filter(r => r.ok && r.queued);
+    document.getElementById('done-ayi').src = ayiFor(project);
+    document.getElementById('done-title').textContent = failed.length === results.length ? 'Not sent' : (failed.length ? 'Partly sent' : (queued.length ? 'Saved on this phone' : 'All set!'));
+    document.getElementById('done-sub').textContent = queued.length
+      ? "You're offline. It will send by itself when you're back online."
+      : 'Logged for ' + project + '.';
+    document.getElementById('done-body').innerHTML = results.map(r => {
+      const g = r.group;
+      const due = r.due ? new Date(r.due) : null;
+      const head = r.ok
+        ? `${ACTIONS[g.action].verb}${g.action === 'BORROWING' && due && !isNaN(due) ? ` · <span class="due">return by ${due.toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' })}</span>` : ''}`
+        : `Couldn't ${ACTIONS[g.action].label.toLowerCase()}: ${escapeHtml(r.error)}`;
+      return `<div class="done-group${r.ok ? '' : ' failed'}">
+        <div class="done-group-head">${head}</div>
+        ${g.lines.map(l => `<div class="checkout-row"><span>${escapeHtml(l.item.title)}</span><b>× ${l.qty}</b></div>`).join('')}
+        ${r.warnings && r.warnings.length ? `<div class="cart-warn">⚠ ${r.warnings.map(escapeHtml).join('<br>')}</div>` : ''}
+      </div>`;
+    }).join('') + (failed.length ? '<div class="notice warn">The items that didn\'t go through are still in your cart.</div>' : '');
+    showView('done');
   }
 
   /* ---------------- Contacts (shared by the Help view and the Contact modal) ----------------
@@ -1864,8 +2479,8 @@
           <div class="contact-role">${escapeHtml(c.role)}</div>
         </div>
         <div class="contact-btn-group">
-          <button class="contact-icon-btn" title="Message ${escapeAttr(c.name)} on Messenger" aria-label="Message ${escapeAttr(c.name)} on Messenger" onclick="window.open('${c.messenger}', '_blank', 'noopener')"><img class="svg-icon" src="icons/ui/messenger.svg" alt=""></button>
-          ${c.telegram ? `<button class="contact-icon-btn" title="Message ${escapeAttr(c.name)} on Telegram" aria-label="Message ${escapeAttr(c.name)} on Telegram" onclick="window.open('${c.telegram}', '_blank', 'noopener')"><img class="svg-icon" src="icons/ui/telegram.svg" alt=""></button>` : ''}
+          <a class="contact-icon-btn" href="${escapeHtml(c.messenger)}" target="_blank" rel="noopener" title="Message ${escapeHtml(c.name)} on Messenger" aria-label="Message ${escapeHtml(c.name)} on Messenger"><img class="svg-icon" src="icons/ui/messenger.svg" alt=""></a>
+          ${c.telegram ? `<a class="contact-icon-btn" href="${escapeHtml(c.telegram)}" target="_blank" rel="noopener" title="Message ${escapeHtml(c.name)} on Telegram" aria-label="Message ${escapeHtml(c.name)} on Telegram"><img class="svg-icon" src="icons/ui/telegram.svg" alt=""></a>` : ''}
         </div>
       </div>`;
   }
@@ -1986,14 +2601,27 @@
   /* ---------------- Toast ---------------- */
 
   let toastTimer = null;
-  function showToast(message, isError) {
+  function showToast(message, isError, action) {
     const toast = document.getElementById('toast');
-    toast.textContent = message;
+    toast.innerHTML = '';
+    const text = document.createElement('span');
+    text.textContent = message;
+    toast.appendChild(text);
+    if (action && action.label) {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'toast-action';
+      b.textContent = action.label;
+      b.addEventListener('click', () => { toast.classList.remove('show'); action.onClick(); });
+      toast.appendChild(b);
+    }
     toast.classList.toggle('error', !!isError);
+    toast.classList.toggle('has-action', !!(action && action.label));
     toast.classList.add('show');
     clearTimeout(toastTimer);
-    toastTimer = setTimeout(() => toast.classList.remove('show'), 2200);
+    toastTimer = setTimeout(() => toast.classList.remove('show'), action ? 4500 : (isError ? 4000 : 2400));
   }
+
 
   /* ---------------- Utils ---------------- */
 
@@ -2020,7 +2648,7 @@
   // stays the focus of each card.
   function locationLine(location) {
     const text = location && location.trim() ? location.trim() : 'Location not recorded';
-    return `<div class="item-loc" title="${escapeAttr(text)}"><span class="loc-dot" style="background:${locationColor(location)}"></span>${escapeHtml(text)}</div>`;
+    return `<span class="item-loc" title="${escapeHtml(text)}"><span class="loc-dot" style="background:${locationColor(location)}"></span>${escapeHtml(text)}</span>`;
   }
 
   function escapeHtml(str) {
@@ -2028,6 +2656,8 @@
       '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
     }[m]));
   }
+  // Attribute values are always double-quoted, so full HTML escaping is what's needed.
   function escapeAttr(str) {
-    return String(str).replace(/'/g, "\\'");
+    return escapeHtml(str);
   }
+

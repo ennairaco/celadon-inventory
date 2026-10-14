@@ -15,7 +15,7 @@
 <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Montserrat:ital,wght@0,400;0,500;0,600;0,700;0,800;1,600&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="inventory.css?v=10">
+<link rel="stylesheet" href="inventory.css?v=16">
 </head>
 <body>
 <div class="desktop-frame">
@@ -57,7 +57,15 @@
             style="text-align:center;flex:1 1 100%;" autocomplete="off" spellcheck="false" />
         </div>
         <button class="btn-primary login-enter-btn" id="login-enter-btn">ENTER</button>
-        <div class="login-error" id="login-error"></div>
+        <div class="login-error" id="login-error" role="alert"></div>
+        <details class="login-connection" id="login-connection">
+          <summary>Connection settings</summary>
+          <label class="field-label" for="login-code-input">Access code <span class="opt">(only if an officer gave you one)</span></label>
+          <div class="id-input-row" style="width:100%;">
+            <input type="password" id="login-code-input" autocomplete="off" placeholder="Access code" style="text-align:left;font-size:14px;">
+          </div>
+          <button type="button" class="btn-secondary" id="login-code-save">Save &amp; try again</button>
+        </details>
       </div>
     </section>
 
@@ -139,6 +147,27 @@
         <div class="identity-name" id="settings-identity-name">—</div>
       </div>
 
+      <div class="home-nav-list home-nav-list-single" style="margin-top:6px;">
+        <div class="home-nav-card" id="settings-help-btn" role="button" tabindex="0">
+          <div class="home-nav-icon"><img class="svg-icon" src="icons/ui/contact.svg" alt=""></div>
+          <div class="home-nav-text">
+            <div class="home-nav-title">Help &amp; contacts</div>
+            <div class="home-nav-sub">Who to message about the org room</div>
+          </div>
+          <div class="home-nav-chevron" aria-hidden="true">›</div>
+        </div>
+        <div class="home-nav-card" id="settings-history-btn" role="button" tabindex="0">
+          <div class="home-nav-icon"><img class="svg-icon" src="icons/ui/book-open.svg" alt=""></div>
+          <div class="home-nav-text">
+            <div class="home-nav-title">History</div>
+            <div class="home-nav-sub">Everything you and your projects logged</div>
+          </div>
+          <div class="home-nav-chevron" aria-hidden="true">›</div>
+        </div>
+      </div>
+
+      <details class="advanced-settings">
+        <summary>Advanced (officers only)</summary>
       <div class="id-input-label" style="text-align:left;margin-top:6px;">INVENTORY SCRIPT URL</div>
       <div class="id-input-row">
         <input type="url" id="settings-inventory-url" placeholder="https://script.google.com/macros/s/…/exec"
@@ -152,6 +181,7 @@
       </div>
       <button class="btn-secondary" id="settings-save-btn" style="margin-top:14px;">Save</button>
       <div class="setup-status" id="settingsStatus"></div>
+      </details>
 
       <div class="home-nav-list home-nav-list-single" style="margin-top:22px;">
         <div class="home-nav-card" id="settings-install-btn" role="button" tabindex="0">
@@ -164,7 +194,8 @@
         </div>
       </div>
 
-      <div class="logout-row"><a id="logout-link">Log out</a></div>
+      <div class="credits">Special thanks to David Yu</div>
+      <div class="logout-row"><a id="logout-link" role="button" tabindex="0">Log out</a></div>
     </section>
 
     <!-- ===================== View: Help ===================== -->
@@ -195,17 +226,23 @@
 
       <div class="history-head">
         <div class="history-title">History</div>
+      </div>
+      <div class="seg-tabs" id="history-tabs" role="tablist">
+        <button type="button" role="tab" data-tab="personal" class="active">Mine</button>
+        <button type="button" role="tab" data-tab="project">By project / department</button>
+      </div>
+      <div style="padding:0 20px;">
         <select id="history-project-select" class="history-project-select" style="display:none;">
-          <option value="">Project/Dept</option>
+          <option value="">Choose a project or department</option>
         </select>
       </div>
 
-      <div class="history-section-label">Pending</div>
+      <div class="history-section-label">Still out</div>
       <div class="history-list" id="history-pending-list">
         <div class="history-empty">No pending requests yet</div>
       </div>
 
-      <div class="history-section-label">Total</div>
+      <div class="history-section-label">Done</div>
       <div class="history-list" id="history-total-list">
         <div class="history-empty">Nothing logged yet</div>
       </div>
@@ -226,38 +263,50 @@
         </div>
 
         <label class="field-label" for="add-title">Item name <span class="req">*</span></label>
-        <input type="text" class="text-field" id="add-title" placeholder="Easy to search, e.g. Extension Cord (5m)" autocomplete="off" required>
+        <input type="text" class="text-field" id="add-title" maxlength="80" placeholder="Easy to search, e.g. Extension Cord (5m)" autocomplete="off" required aria-describedby="err-add-title">
+        <div class="field-error" id="err-add-title"></div>
+        <div class="field-hint" id="dup-add-title"></div>
 
         <div class="add-row">
           <div>
-            <label class="field-label" for="add-qty">Quantity</label>
-            <input type="text" class="text-field" id="add-qty" inputmode="numeric" placeholder="e.g. 5, or * for a lot" autocomplete="off">
+            <label class="field-label" for="add-qty">Quantity <span class="req">*</span></label>
+            <input type="text" class="text-field" id="add-qty" inputmode="numeric" maxlength="4" placeholder="e.g. 5, or * for a lot" autocomplete="off" aria-describedby="err-add-qty">
+            <div class="field-error" id="err-add-qty"></div>
           </div>
           <div>
             <label class="field-label" for="add-unit">Unit</label>
-            <input type="text" class="text-field" id="add-unit" placeholder="pcs, packs, sets" autocomplete="off">
+            <input type="text" class="text-field" id="add-unit" maxlength="15" placeholder="pcs, packs, sets" autocomplete="off" list="add-unit-list" aria-describedby="err-add-unit">
+            <datalist id="add-unit-list"><option value="pcs"><option value="packs"><option value="sets"><option value="boxes"><option value="bottles"><option value="pairs"><option value="rolls"><option value="bags"></datalist>
+            <div class="field-error" id="err-add-unit"></div>
           </div>
         </div>
 
         <label class="field-label" for="add-dept">Department that owns it <span class="req">*</span></label>
-        <select id="add-dept" required></select>
+        <select id="add-dept" required aria-describedby="err-add-dept"></select>
+        <div class="field-error" id="err-add-dept"></div>
 
         <div class="add-row">
           <div>
-            <label class="field-label" for="add-type">Type</label>
-            <select id="add-type"></select>
+            <label class="field-label" for="add-type">Type <span class="req">*</span></label>
+            <select id="add-type" aria-describedby="err-add-type"></select>
+            <div class="field-error" id="err-add-type"></div>
           </div>
           <div>
-            <label class="field-label" for="add-category">Category</label>
-            <select id="add-category"></select>
+            <label class="field-label" for="add-category">Kind <span class="req">*</span></label>
+            <select id="add-category" aria-describedby="err-add-category"></select>
+            <div class="field-error" id="err-add-category"></div>
           </div>
         </div>
 
         <label class="field-label" for="add-storage">Storage area</label>
-        <select id="add-storage"></select>
+        <select id="add-storage" aria-describedby="err-add-storage"></select>
+        <div id="add-storage-new-wrap" style="display:none;">
+          <input type="text" class="text-field" id="add-storage-new" maxlength="40" placeholder="Name the new location, e.g. Locker 3" autocomplete="off" aria-label="New location name">
+        </div>
+        <div class="field-error" id="err-add-storage"></div>
 
         <label class="field-label" for="add-spot">Specific spot <span class="opt">(optional)</span></label>
-        <input type="text" class="text-field" id="add-spot" placeholder="e.g. CUL MAF Box, office supplies box" autocomplete="off">
+        <input type="text" class="text-field" id="add-spot" maxlength="80" placeholder="e.g. CUL MAF Box, office supplies box" autocomplete="off">
 
         <label class="field-label" for="add-event">Event <span class="opt">(optional)</span></label>
         <select id="add-event"></select>
@@ -265,12 +314,14 @@
         <label class="add-check"><input type="checkbox" id="add-expires"> It has an expiry date</label>
         <div id="add-expiry-wrap" style="display:none;">
           <label class="field-label" for="add-expiry">Expiry date</label>
-          <input type="date" class="text-field" id="add-expiry">
+          <input type="date" class="text-field" id="add-expiry" aria-describedby="err-add-expiry">
+          <div class="field-error" id="err-add-expiry"></div>
           <div class="case-hint" style="margin-top:-8px;margin-bottom:14px;">Items that expire are saved to the Consumables tab.</div>
         </div>
 
         <label class="field-label" for="add-notes">Notes <span class="opt">(optional)</span></label>
-        <textarea class="text-field" id="add-notes" rows="2" placeholder="Colours, condition, who to ask before borrowing…"></textarea>
+        <textarea class="text-field" id="add-notes" rows="2" maxlength="300" placeholder="Colours, condition, who to ask before borrowing…"></textarea>
+        <div class="field-hint right" id="add-notes-count">0 / 300</div>
 
         <div class="login-error" id="add-error" role="alert"></div>
         <button type="submit" class="btn-primary" id="add-submit">ADD TO INVENTORY</button>
@@ -300,10 +351,15 @@
           <input type="text" id="catalog-search" class="catalog-search-input" placeholder="Search items, type, event, location…" autocomplete="off">
           <button class="catalog-search-clear" id="catalog-search-clear" aria-label="Clear search" style="display:none;"><img class="svg-icon" src="icons/ui/close.svg" alt=""></button>
         </div>
-        <select id="catalog-sort" class="catalog-sort-select">
-          <option value="default">Sort: Default</option>
+      </div>
+      <div class="catalog-filter-row">
+        <select id="catalog-dept" class="catalog-sort-select" aria-label="Filter by department">
+          <option value="all">All departments</option>
+        </select>
+        <select id="catalog-sort" class="catalog-sort-select" aria-label="Sort items">
+          <option value="default">Sort: Category</option>
           <option value="name">Sort: Name (A–Z)</option>
-          <option value="category">Sort: Department</option>
+          <option value="available">Sort: Most available</option>
           <option value="location">Sort: Location</option>
         </select>
       </div>
@@ -313,7 +369,10 @@
           <button class="icon-btn active" id="format-grid-btn" title="Grid view" aria-label="Grid view" aria-pressed="true"><img class="svg-icon" src="icons/ui/grid.svg" alt=""></button>
           <button class="icon-btn" id="format-list-btn" title="List view" aria-label="List view" aria-pressed="false"><img class="svg-icon" src="icons/ui/list.svg" alt=""></button>
         </div>
-        <div id="catalog-result-count" style="font-size:11px;color:var(--text-dim);">Tap an item to add it to your cart</div>
+        <div class="catalog-count">
+          <div id="catalog-result-count">Tap an item to see details</div>
+          <div class="sync-note" id="catalog-sync" aria-live="polite"></div>
+        </div>
         <button type="button" class="add-item-btn" id="catalog-add-btn">+ Add item</button>
       </div>
       <div id="catalog-container" class="item-grid"></div>
@@ -321,68 +380,60 @@
 
     <!-- ===================== View: Cart ===================== -->
     <section class="view" id="view-cart">
-      <h2 class="state-title" style="text-align:left;font-size:19px;">Your Request</h2>
-      <div class="item-list" id="cart-list"></div>
-      <button class="btn-primary" id="cart-checkout-btn" onclick="showView('checkout')" disabled>CHECKOUT</button>
+      <h2 class="page-title">Your cart</h2>
+      <p class="page-sub">Choose what you're doing with each item. Equipment starts as <b>Borrow</b>, supplies as <b>Use up</b>.</p>
+      <div id="cart-list"></div>
+      <div id="cart-summary"></div>
+      <button class="btn-primary" id="cart-checkout-btn" disabled>CONTINUE</button>
+      <button class="btn-secondary" id="cart-more-btn">Add more items</button>
     </section>
 
     <!-- ===================== View: Checkout ===================== -->
     <section class="view" id="view-checkout">
-      <span class="field-label">ID Number</span>
-      <div class="field-static" id="checkout-id-display">Not scanned yet</div>
+      <h2 class="page-title">Review &amp; submit</h2>
+      <div class="checkout-who" id="checkout-who"></div>
 
-      <span class="field-label">Case</span>
-      <div class="case-toggle" id="case-toggle">
-        <button type="button" class="case-btn active" data-case="BORROWING">Borrow</button>
-        <button type="button" class="case-btn" data-case="CONSUMING">Use up</button>
-        <button type="button" class="case-btn" data-case="RETURNING">Return</button>
-        <button type="button" class="case-btn" data-case="RESTOCKING">Add stock</button>
-      </div>
-      <div class="case-hint" id="case-hint">Borrowing: taking items out of the org room for the project/department above. They stay under it until they're marked returned.</div>
-
-      <span class="field-label">For (project / department)</span>
+      <label class="field-label" for="project-select">For (project / department) <span class="req">*</span></label>
       <select id="project-select" aria-required="true"></select>
 
-      <span class="field-label">Purpose <span style="text-transform:none;font-weight:400;opacity:0.7;">(optional)</span></span>
-      <input type="text" class="text-field" id="committee-input" placeholder="e.g. booth set-up, pubmat shoot" />
+      <label class="field-label" for="committee-input">Purpose <span class="opt">(optional)</span></label>
+      <input type="text" class="text-field" id="committee-input" maxlength="120" placeholder="e.g. booth set-up, pubmat shoot" />
 
-      <span class="field-label">Order Summary</span>
-      <table class="summary-table">
-        <thead><tr><th>Product</th><th>Quantity</th></tr></thead>
-        <tbody id="checkout-summary-body"></tbody>
-      </table>
+      <div id="checkout-summary"></div>
+      <div id="checkout-warnings"></div>
 
-      <button class="btn-primary" id="submit-order-btn">SUBMIT REQUEST</button>
-      <button class="btn-secondary" onclick="showView('cart')">Back to Cart</button>
+      <button class="btn-primary" id="submit-order-btn">SUBMIT</button>
+      <button class="btn-secondary" id="checkout-back-btn">Back to cart</button>
+    </section>
+
+    <!-- ===================== View: Done ===================== -->
+    <section class="view" id="view-done">
+      <div class="done-wrap">
+        <img class="done-ayi" id="done-ayi" src="brand/ayi/ayi.png" alt="">
+        <h2 class="page-title" id="done-title">All set!</h2>
+        <p class="page-sub" id="done-sub"></p>
+        <div id="done-body"></div>
+        <button class="btn-primary" id="done-home-btn">BACK TO HOME</button>
+        <button class="btn-secondary" id="done-more-btn">Get more items</button>
+      </div>
     </section>
 
   </div>
 
-  <!-- ===================== Bottom Nav (Catalog / Cart / Checkout) ===================== -->
-  <nav class="bottom-nav" id="bottom-nav">
+  <!-- ===================== Bottom Nav (all screens; sidebar on desktop) ===================== -->
+  <nav class="bottom-nav" id="bottom-nav" aria-label="Main">
     <div class="sidebar-brand">
       <img class="sidebar-brand-mark" src="brand/dreagle-mark.png" alt="Ateneo Celadon">
     </div>
     <div class="bottom-nav-inner">
-      <div class="nav-btn" data-view="home" role="button" tabindex="0"><span class="nav-emoji"><img class="svg-icon nav-svg-icon" src="icons/ui/home.svg" alt=""></span>Home</div>
-      <div class="nav-btn" data-view="catalog" role="button" tabindex="0"><span class="nav-emoji"><img class="svg-icon nav-svg-icon" src="icons/ui/archive-box.svg" alt=""></span>Catalog</div>
-      <div class="nav-btn" data-view="cart" role="button" tabindex="0"><span class="nav-emoji"><img class="svg-icon nav-svg-icon" src="icons/ui/shopping-basket.svg" alt=""></span>Cart</div>
-      <div class="nav-btn" data-view="checkout" role="button" tabindex="0"><span class="nav-emoji"><img class="svg-icon nav-svg-icon" src="icons/ui/check.svg" alt=""></span>Checkout</div>
+      <button type="button" class="nav-btn" data-view="home"><span class="nav-emoji"><img class="svg-icon nav-svg-icon" src="icons/ui/home.svg" alt=""></span>Home</button>
+      <button type="button" class="nav-btn" data-view="catalog"><span class="nav-emoji"><img class="svg-icon nav-svg-icon" src="icons/ui/archive-box.svg" alt=""></span>Items</button>
+      <button type="button" class="nav-btn" data-view="cart"><span class="nav-emoji"><img class="svg-icon nav-svg-icon" src="icons/ui/shopping-basket.svg" alt=""><span class="nav-badge" id="nav-cart-badge" style="display:none;">0</span></span>Cart</button>
+      <button type="button" class="nav-btn" data-view="out"><span class="nav-emoji"><img class="svg-icon nav-svg-icon" src="icons/ui/arrow-right.svg" alt=""></span>Borrowed</button>
+      <button type="button" class="nav-btn" data-view="settings"><span class="nav-emoji"><img class="svg-icon nav-svg-icon" src="icons/ui/cog.svg" alt=""></span>Settings</button>
     </div>
-    <div class="sidebar-logout"><a class="sidebar-logout-link">Log out</a></div>
-  </nav>
-
-  <!-- ===================== Bottom Nav (Home / Settings / Help) ===================== -->
-  <nav class="bottom-nav" id="bottom-nav-main">
-    <div class="sidebar-brand">
-      <img class="sidebar-brand-mark" src="brand/dreagle-mark.png" alt="Ateneo Celadon">
-    </div>
-    <div class="bottom-nav-inner">
-      <div class="nav-btn" data-mainview="home" role="button" tabindex="0"><span class="nav-emoji"><img class="svg-icon nav-svg-icon" src="icons/ui/home.svg" alt=""></span>Home</div>
-      <div class="nav-btn" id="nav-slot-2" data-mainview="settings" role="button" tabindex="0"><span class="nav-emoji"><img class="svg-icon nav-svg-icon" src="icons/ui/cog.svg" alt=""></span>Settings</div>
-      <div class="nav-btn" id="nav-slot-3" data-mainview="help" role="button" tabindex="0"><span class="nav-emoji"><img class="svg-icon nav-svg-icon" src="icons/ui/contact.svg" alt=""></span>Help</div>
-    </div>
-    <div class="sidebar-logout"><a class="sidebar-logout-link">Log out</a></div>
+    <div class="sidebar-credits">Special thanks to David Yu</div>
+    <div class="sidebar-logout"><a class="sidebar-logout-link" role="button" tabindex="0">Log out</a></div>
   </nav>
 
   <!-- ===================== Install App Banner (mobile only) ===================== -->
@@ -404,6 +455,28 @@
     </div>
   </div>
 
+  <!-- ===================== "What is this for?" picker ===================== -->
+  <div class="sheet-backdrop" id="for-sheet" aria-hidden="true">
+    <div class="sheet sheet-tall" role="dialog" aria-modal="true" aria-labelledby="for-sheet-title">
+      <button type="button" class="sheet-close" id="for-sheet-close" aria-label="Close">×</button>
+      <h3 class="sheet-title" id="for-sheet-title">What is this for?</h3>
+      <p class="page-sub" style="margin:2px 0 12px;">Everything you borrow or use is logged under a department or project.</p>
+      <div class="catalog-search-wrap" style="margin-bottom:12px;">
+        <img class="svg-icon catalog-search-icon" src="icons/ui/search.svg" alt="">
+        <input type="text" id="for-search" class="catalog-search-input" placeholder="Search departments and projects" autocomplete="off">
+      </div>
+      <div id="for-sheet-body"></div>
+    </div>
+  </div>
+
+  <!-- ===================== Item detail sheet ===================== -->
+  <div class="sheet-backdrop" id="item-sheet" aria-hidden="true">
+    <div class="sheet" role="dialog" aria-modal="true" aria-labelledby="sheet-title">
+      <button type="button" class="sheet-close" id="sheet-close" aria-label="Close">×</button>
+      <div id="sheet-body"></div>
+    </div>
+  </div>
+
   <!-- ===================== Toast ===================== -->
   <div class="toast" id="toast" role="status" aria-live="polite"></div>
 
@@ -420,6 +493,6 @@
   </div>
 
 </div>
-<script src="inventory.js?v=15"></script>
+<script src="inventory.js?v=20"></script>
 </body>
 </html>

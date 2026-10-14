@@ -36,11 +36,19 @@ The app only adds rows through **Add to inventory** (to the next empty row of In
 
 **Later, to use the existing members sheet instead of MEMBERS:** in Apps Script, open **Project Settings → Script properties** and add `MEMBERS_SPREADSHEET_ID` (the long ID in that sheet's URL) and `MEMBERS_SHEET_NAME` (its tab name). Columns are found by name: ID Number / Student Number, Name (or First + Last Name), Department, Email.
 
+### Members tab
+
+MEMBERS can be the RecWeek sign-up form's response tab as-is. The script finds **ID Number**, **First Name** + **Last Name** and **Email Address** by their headers and ignores the other columns. If someone submitted twice, their latest row wins. The member list is cached for 10 minutes; after editing it, use **Celadon Inventory → Refresh member list now** so changes apply immediately.
+
+### Time zone
+
+In Apps Script, open **Project Settings** and set the time zone to **(GMT+08:00) Manila**. Due dates are counted in that time zone. `setupSheets` warns you if it's wrong.
+
 ## 2. Deploy it
 
 1. **Deploy → New deployment → Web app**. Execute as: **Me**. Who has access: **Anyone**.
 2. Copy the `/exec` URL and send it to whoever maintains the app code. It goes into `DEFAULT_INVENTORY_URL` in `inventory.js`, then gets pushed to GitHub.
-3. (Recommended) Add the script property `ACCESS_TOKEN` with any secret phrase. Members enter it once under the app's Settings.
+3. (Optional) Add the script property `ACCESS_TOKEN` with a secret phrase. Members then need to enter it once, under **Connection settings** on the login screen.
 4. After any script change: **Deploy → Manage deployments → Edit → New version**. The URL stays the same.
 
 ## 3. Turn on daily reminders
@@ -54,6 +62,7 @@ Optional script properties:
 - `BORROW_DAYS` (default 7): how long a borrow can stay out when its project has no event end date.
 - `REMIND_EVERY_DAYS` (default 3): how often an overdue item is re-reminded.
 - `EXPIRY_WARN_DAYS` (default 14): how early expiring Consumables are flagged.
+- `HISTORY_DAYS` (default 180): finished requests older than this aren't sent to the app, which keeps it fast. Everything stays in REQUESTS.
 
 ## App hosting
 
