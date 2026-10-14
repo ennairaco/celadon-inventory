@@ -742,39 +742,31 @@
     return !!(rec.lineId && state.lastId);
   }
 
-  /* ---------------- Appearance: system / light / dark ---------------- */
+  /* ---------------- Appearance: light (default) or dark ---------------- */
   const APPEARANCE_KEY = 'cela_appearance';
-  const darkQuery = window.matchMedia ? matchMedia('(prefers-color-scheme: dark)') : null;
 
-  function getAppearance() {
-    try { return localStorage.getItem(APPEARANCE_KEY) || 'system'; } catch(e) { return 'system'; }
+  function isDarkChosen() {
+    try { return localStorage.getItem(APPEARANCE_KEY) === 'dark'; } catch(e) { return false; }
   }
 
-  function applyAppearance(pref) {
+  function applyAppearance(dark) {
     const root = document.documentElement;
-    const dark = pref === 'dark' || (pref === 'system' && darkQuery && darkQuery.matches);
-    if (pref === 'system') root.removeAttribute('data-appearance'); else root.setAttribute('data-appearance', pref);
+    if (dark) root.setAttribute('data-appearance', 'dark'); else root.removeAttribute('data-appearance');
     root.toggleAttribute('data-theme-dark', !!dark);
     const meta = document.querySelector('meta[name="theme-color"]');
     if (meta) meta.setAttribute('content', dark ? '#0b1220' : '#ffffff');
-    document.querySelectorAll('#appearance-tabs [data-appearance]').forEach(b => {
-      const on = b.dataset.appearance === pref;
-      b.classList.toggle('active', on);
-      b.setAttribute('aria-checked', on ? 'true' : 'false');
-    });
+    const sw = document.getElementById('dark-mode-switch');
+    if (sw) { sw.checked = !!dark; sw.setAttribute('aria-checked', dark ? 'true' : 'false'); }
   }
 
   function bindAppearance() {
-    applyAppearance(getAppearance());
-    document.querySelectorAll('#appearance-tabs [data-appearance]').forEach(b => b.addEventListener('click', () => {
-      try { localStorage.setItem(APPEARANCE_KEY, b.dataset.appearance); } catch(e) {}
-      applyAppearance(b.dataset.appearance);
-    }));
-    // Follow the phone switching between light and dark while the app is open.
-    if (darkQuery) {
-      const onChange = () => { if (getAppearance() === 'system') applyAppearance('system'); };
-      if (darkQuery.addEventListener) darkQuery.addEventListener('change', onChange); else darkQuery.addListener(onChange);
-    }
+    applyAppearance(isDarkChosen());
+    const sw = document.getElementById('dark-mode-switch');
+    if (!sw) return;
+    sw.addEventListener('change', () => {
+      try { localStorage.setItem(APPEARANCE_KEY, sw.checked ? 'dark' : 'light'); } catch(e) {}
+      applyAppearance(sw.checked);
+    });
   }
 
   /* ---------------- "What is this for?" picker ----------------

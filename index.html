@@ -7,14 +7,13 @@
 <link rel="manifest" href="manifest.json">
 <meta name="theme-color" content="#ffffff">
 <script>
-  // Apply light/dark before first paint (no white flash). "system" follows the phone.
+  // Light by default; dark only when switched on in Settings. Applied before
+  // first paint so there's no flash.
   (function () {
-    var pref = 'system';
-    try { pref = localStorage.getItem('cela_appearance') || 'system'; } catch (e) {}
-    var dark = pref === 'dark' || (pref === 'system' && window.matchMedia && matchMedia('(prefers-color-scheme: dark)').matches);
+    var dark = false;
+    try { dark = localStorage.getItem('cela_appearance') === 'dark'; } catch (e) {}
     var root = document.documentElement;
-    if (pref !== 'system') root.setAttribute('data-appearance', pref);
-    if (dark) root.setAttribute('data-theme-dark', '');
+    if (dark) { root.setAttribute('data-appearance', 'dark'); root.setAttribute('data-theme-dark', ''); }
     document.querySelector('meta[name="theme-color"]').setAttribute('content', dark ? '#0b1220' : '#ffffff');
   })();
 </script>
@@ -27,7 +26,7 @@
 <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Montserrat:ital,wght@0,400;0,500;0,600;0,700;0,800;1,600&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="inventory.css?v=20">
+<link rel="stylesheet" href="inventory.css?v=21">
 </head>
 <body>
   <!-- Celadon Inventory icon set (drawn for this app). Use: <svg class="svg-icon"><use href="#i-NAME"/></svg> -->
@@ -208,14 +207,14 @@
         </div>
       </div>
 
-      <div class="appearance-block">
-        <div class="field-label">Appearance</div>
-        <div class="seg-tabs" id="appearance-tabs" role="radiogroup" aria-label="Appearance" style="margin:0;">
-          <button type="button" role="radio" data-appearance="system">System</button>
-          <button type="button" role="radio" data-appearance="light">Light</button>
-          <button type="button" role="radio" data-appearance="dark">Dark</button>
-        </div>
-      </div>
+      <label class="appearance-block switch-row" for="dark-mode-switch">
+        <span class="switch-text">
+          <span class="switch-title">Dark mode</span>
+          <span class="switch-sub">Easier on the eyes at night</span>
+        </span>
+        <input type="checkbox" role="switch" id="dark-mode-switch" class="switch-input">
+        <span class="switch" aria-hidden="true"><span class="switch-knob"></span></span>
+      </label>
 
       <details class="advanced-settings">
         <summary>Advanced (officers only)</summary>
@@ -544,6 +543,6 @@
   </div>
 
 </div>
-<script src="inventory.js?v=24" defer></script>
+<script src="inventory.js?v=25" defer></script>
 </body>
 </html>
