@@ -282,7 +282,7 @@
       // Departments
       'OP', 'COMMPUB', 'CUL', 'EXREL', 'FIN', 'HR', 'OSR', 'General',
       // Projects (same names as the Inventory tab's Event column)
-      'Recruitment and Welcome Week', 'Celadon Merchandise', 'General Assembly',
+      'Recruitment Week and Welcome Week', 'Celadon Merchandise', 'General Assembly',
       'Mid-Autumn Festival', 'Lunar Lotus Market', 'TALAB x Faculty Appreciation Week',
       'Jade Business Summit', 'Leadership Development Program', 'Celadon Rose Sale',
       'Chinese New Year', 'Spring Film Festival', 'Binondo Amazing Race',

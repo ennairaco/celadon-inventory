@@ -81,7 +81,7 @@ var CELA = {
   // Departments, then the Inventory tab's own Event names so they match.
   DEFAULT_PROJECTS: [
     'OP', 'COMMPUB', 'CUL', 'EXREL', 'FIN', 'HR', 'OSR', 'General',
-    'Recruitment and Welcome Week', 'Celadon Merchandise', 'General Assembly',
+    'Recruitment Week and Welcome Week', 'Celadon Merchandise', 'General Assembly',
     'Mid-Autumn Festival', 'Lunar Lotus Market', 'TALAB x Faculty Appreciation Week',
     'Jade Business Summit', 'Leadership Development Program', 'Celadon Rose Sale',
     'Chinese New Year', 'Spring Film Festival', 'Binondo Amazing Race',
