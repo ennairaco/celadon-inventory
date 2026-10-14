@@ -528,6 +528,12 @@
     if ('serviceWorker' in navigator) {
       navigator.serviceWorker.register('sw.js', { updateViaCache: 'none' }).catch(() => {});
     }
+    requestAnimationFrame(() => {
+      const splash = document.getElementById('splash');
+      if (!splash) return;
+      splash.classList.add('hide');
+      setTimeout(() => splash.remove(), 450);
+    });
   });
 
   /* ---------------- Navigation ---------------- */
@@ -819,8 +825,8 @@
     }
     const b = brandFor(name);
     const visual = b.kind === 'dept'
-      ? `<span class="fp-visual fp-ayi"><img src="${b.img}" alt=""></span>`
-      : (b.cover ? `<span class="fp-visual fp-cover" style="background-image:url('${b.cover}')"></span>` : `<span class="fp-visual fp-emoji" style="background:linear-gradient(135deg, ${b.theme[0]}, ${b.theme[1]})">${b.emoji}</span>`);
+      ? `<span class="fp-visual fp-ayi"><img src="${b.img}" alt="" decoding="async"></span>`
+      : (b.cover ? `<span class="fp-visual fp-cover"><img src="${b.cover}" alt="" decoding="async"></span>` : `<span class="fp-visual fp-emoji" style="background:linear-gradient(135deg, ${b.theme[0]}, ${b.theme[1]})">${b.emoji}</span>`);
     return `${visual}
       <span class="fp-text"><span class="fp-eyebrow">${b.kind === 'dept' ? 'Department' : 'Project'}</span><span class="fp-name">${escapeHtml(b.title)}</span><span class="fp-sub">${escapeHtml(b.kind === 'dept' ? b.sub : (b.sub !== 'Project' ? b.sub : ''))}</span></span>
       <span class="fp-change">Change</span>`;
@@ -903,13 +909,13 @@
     const selected = name => sameName(name, state.actingAs) ? ' selected' : '';
     const deptCard = b => `
       <button type="button" class="for-card dept${selected(b.name)}" data-pick="${escapeHtml(b.name)}" style="--c:${b.theme[0]};--c-tint:${b.theme[2]}">
-        <img src="${b.img}" alt="">
+        <img src="${b.img}" alt="" loading="lazy" decoding="async">
         <span class="for-card-code">${escapeHtml(b.title)}</span>
         <span class="for-card-sub">${escapeHtml(b.sub)}</span>
       </button>`;
     const projectCard = b => `
-      <button type="button" class="for-card project${b.cover ? '' : ' no-cover'}${selected(b.name)}" data-pick="${escapeHtml(b.name)}" style="--c:${b.theme[0]};--c-deep:${b.theme[1]};${b.cover ? `background-image:linear-gradient(180deg, transparent 25%, ${b.theme[1]}e6 100%), url('${b.cover}')` : ''}">
-        ${b.cover ? '' : `<span class="for-card-emoji" aria-hidden="true">${b.emoji}</span>`}
+      <button type="button" class="for-card project${b.cover ? '' : ' no-cover'}${selected(b.name)}" data-pick="${escapeHtml(b.name)}" style="--c:${b.theme[0]};--c-deep:${b.theme[1]}">
+        ${b.cover ? `<img class="for-card-cover" src="${b.cover}" alt="" loading="lazy" decoding="async"><span class="for-card-shade" aria-hidden="true"></span>` : `<span class="for-card-emoji" aria-hidden="true">${b.emoji}</span>`}
         <span class="for-card-name">${escapeHtml(b.title)}</span>
         ${b.sub !== 'Project' ? `<span class="for-card-short">${escapeHtml(b.sub)}</span>` : ''}
       </button>`;
@@ -1203,7 +1209,7 @@
     if (!url || !navigator.onLine) { err.textContent = 'You need to be online to add items.'; return; }
 
     addingItem = true;
-    btn.disabled = true; btn.innerHTML = '<span class="spinner" aria-hidden="true"></span> ADDING…';
+    btn.disabled = true; btn.innerHTML = BUSY_DOTS + ' ADDING';
     try {
       const token = getInventoryToken();
       const res = await fetch(url + '?action=addItem', {
@@ -1310,7 +1316,7 @@
       document.getElementById('proj-dash-title').textContent = project;
       document.getElementById('proj-dash-sub').textContent = 'Checking what\'s out…';
       document.getElementById('proj-dash-stats').innerHTML = '<div class="dash-stat skeleton"></div>'.repeat(3);
-      document.getElementById('proj-dash-list').innerHTML = '<div class="dash-row skeleton" style="height:54px;"></div>'.repeat(2);
+      document.getElementById('proj-dash-list').innerHTML = loaderHtml('Checking what\'s out…', true);
       document.getElementById('proj-dash-actions').innerHTML = '';
       return;
     }
@@ -1390,7 +1396,7 @@
       </div>`).join('');
 
     document.getElementById('proj-dash-list').innerHTML = offlineNote +
-      (out.length ? outRows : `<div class="dash-empty"><img src="${ayiFor(project)}" alt=""><div>All clear! ${escapeHtml(project)} has nothing out right now.</div></div>`) +
+      (out.length ? outRows : `<div class="dash-empty"><img src="${ayiFor(project)}" alt="" loading="lazy" decoding="async"><div>All clear! ${escapeHtml(project)} has nothing out right now.</div></div>`) +
       (returned.length ? `<details class="dash-done"><summary>Recently returned (${returned.length})</summary>${doneRows}</details>` : '');
 
     // Keeps the group / select-all boxes in step with the item boxes.
@@ -1516,7 +1522,7 @@
     if (!list) return;
     document.querySelectorAll('#out-filter .category-chip').forEach(b => b.classList.toggle('active', b.dataset.filter === state.outFilter));
     const myToken = ++outLoadToken;
-    list.innerHTML = '<div class="history-item skeleton-row skeleton" style="height:52px;"></div>'.repeat(3);
+    list.innerHTML = loaderHtml('Finding what\'s out…');
 
     const { records, offline, syncedAt } = await fetchHistoryRecords();
     if (myToken !== outLoadToken) return;
@@ -1535,7 +1541,7 @@
     pending.forEach(r => { (groups[r.project || '—'] = groups[r.project || '—'] || []).push(r); });
 
     const offlineNote = offline
-      ? `<div class="history-offline-note"><img class="svg-icon icon-inline" src="icons/ui/wifi.svg" alt="">Showing ${syncedAt ? 'data from ' + new Date(syncedAt).toLocaleString() : 'no saved data'}.</div>`
+      ? `<div class="history-offline-note"><svg class="svg-icon icon-inline" aria-hidden="true" focusable="false"><use href="#i-wifi"/></svg>Showing ${syncedAt ? 'data from ' + new Date(syncedAt).toLocaleString() : 'no saved data'}.</div>`
       : '';
     list.innerHTML = offlineNote + (pending.length
       ? Object.keys(groups).map(project => `
@@ -1552,8 +1558,8 @@
 
     const myToken = ++historyLoadToken; // avoids a slow older fetch overwriting a newer render
     const skeletonRow = '<div class="history-item skeleton-row skeleton" style="height:52px;"></div>';
-    pendingList.innerHTML = skeletonRow.repeat(2);
-    totalList.innerHTML = skeletonRow.repeat(3);
+    pendingList.innerHTML = loaderHtml('Loading your history…');
+    totalList.innerHTML = skeletonRow.repeat(2);
 
     const { records, offline, error, syncedAt } = await fetchHistoryRecords();
     if (myToken !== historyLoadToken) return; // a newer call already took over
@@ -1577,7 +1583,7 @@
     const total = scoped.filter(r => r.resolved);
 
     const offlineNote = offline
-      ? `<div class="history-offline-note"><img class="svg-icon icon-inline" src="icons/ui/wifi.svg" alt="">${error ? 'Could not refresh' : "You're offline"} — showing ${syncedAt ? 'last synced (' + new Date(syncedAt).toLocaleString() + ')' : 'no saved'} data.</div>`
+      ? `<div class="history-offline-note"><svg class="svg-icon icon-inline" aria-hidden="true" focusable="false"><use href="#i-wifi"/></svg>${error ? 'Could not refresh' : "You're offline"} — showing ${syncedAt ? 'last synced (' + new Date(syncedAt).toLocaleString() + ')' : 'no saved'} data.</div>`
       : '';
 
     pendingList.innerHTML = offlineNote + (pending.length
@@ -1654,9 +1660,9 @@
 
       btn.disabled = true;
       btn.classList.add('loading');
-      btn.innerHTML = '<span class="spinner" aria-hidden="true"></span> CHECKING…';
+      btn.innerHTML = BUSY_DOTS + ' CHECKING';
       // Apps Script can take a few seconds to wake up; say so instead of looking stuck.
-      const slowTimer = setTimeout(() => { err.className = 'login-error info'; err.textContent = 'Waking up the inventory sheet… this can take a few seconds.'; }, 2500);
+      const slowTimer = setTimeout(() => { err.className = 'login-error info'; err.innerHTML = loaderHtml('Waking up the inventory sheet… this can take a few seconds.', true); }, 2500);
 
       const result = await fetchIdLookup(idValue);
 
@@ -1791,6 +1797,15 @@
   }
 
   /* ---------------- Inventory / catalog ---------------- */
+
+  /* ---------------- Loading visuals ----------------
+     A swinging lantern (drawn for this app) for anything that takes a
+     moment, and three bouncing "dumplings" inside busy buttons. */
+  const LANTERN_SVG = '<svg class="lantern" viewBox="0 0 64 96" aria-hidden="true" focusable="false"><path d="M32 2v10" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"/><rect x="22" y="11" width="20" height="7" rx="2.5" fill="currentColor"/><ellipse class="lantern-glow" cx="32" cy="44" rx="29" ry="29" fill="#f09b43" opacity=".2"/><path d="M12 44c0-14 9-25 20-25s20 11 20 25-9 25-20 25-20-11-20-25z" fill="currentColor"/><path d="M32 19c-6 6-8 15-8 25s2 19 8 25M32 19c6 6 8 15 8 25s-2 19-8 25" fill="none" stroke="#fff" stroke-opacity=".35" stroke-width="1.6"/><path d="M13.5 37h37M13.5 51h37" stroke="#fff" stroke-opacity=".25" stroke-width="1.4"/><ellipse class="lantern-light" cx="27" cy="38" rx="5" ry="9" fill="#ffd9a8" opacity=".55"/><rect x="22" y="68" width="20" height="7" rx="2.5" fill="currentColor"/><path d="M32 75v8" stroke="#f09b43" stroke-width="2.5" stroke-linecap="round"/><path class="lantern-tassel" d="M28 83h8l-1.2 11h-5.6z" fill="#f09b43"/></svg>';
+  function loaderHtml(text, small) {
+    return `<div class="cela-loader${small ? ' small' : ''}" role="status">${LANTERN_SVG}<div class="cela-loader-text">${escapeHtml(text || 'Loading…')}</div></div>`;
+  }
+  const BUSY_DOTS = '<span class="dots" aria-hidden="true"><i></i><i></i><i></i></span>';
 
   /* ---------------- Categories ----------------
      The sheet's Type column, shown under friendlier names. Merch (from the
@@ -2081,7 +2096,7 @@
     const card = grid
       ? '<div class="item-card skeleton-card skeleton"><div class="skeleton-line w40"></div><div class="skeleton-line"></div><div class="skeleton-line w60"></div></div>'
       : '<div class="item-row skeleton-row skeleton"><div class="skeleton-lines"><div class="skeleton-line"></div><div class="skeleton-line w40"></div></div></div>';
-    container.innerHTML = `<div class="loading-card" style="grid-column:1/-1;"><img src="brand/ayi/ayi.png" alt=""><div><b>Getting the org room list…</b><br>The first load can take a few seconds.</div></div>` + card.repeat(grid ? 6 : 4);
+    container.innerHTML = `<div style="grid-column:1/-1;">${loaderHtml('Getting the org room list… the first load can take a few seconds.')}</div>` + card.repeat(grid ? 6 : 4);
   }
 
   function renderCatalog() {
@@ -2092,7 +2107,7 @@
     if (!state.inventory.length) {
       if (inventoryLoading || !inventorySyncedAt) { renderCatalogSkeleton(container); return; }
       container.className = 'item-list';
-      container.innerHTML = '<div class="empty-state"><img class="svg-icon" src="icons/ui/archive-box.svg" alt="">No items in the sheet yet.</div>';
+      container.innerHTML = '<div class="empty-state"><svg class="svg-icon" aria-hidden="true" focusable="false"><use href="#i-archive-box"/></svg>No items in the sheet yet.</div>';
       return;
     }
 
@@ -2108,7 +2123,7 @@
       container.className = 'item-list';
       container.innerHTML = notice + `
         <div class="empty-state">
-          <img src="brand/ayi/ayi.png" alt="" class="empty-ayi">
+          <img src="brand/ayi/ayi.png" alt="" class="empty-ayi" loading="lazy" decoding="async">
           Nothing matches${state.catalogSearch.trim() ? ' "' + escapeHtml(state.catalogSearch.trim()) + '"' : ''}.
           <button type="button" class="btn-secondary" style="margin-top:14px;max-width:220px;" data-cmd="clear-filters">Clear filters</button>
           <button type="button" class="text-link" style="margin-top:6px;" data-cmd="go-add">Not listed? Add it to the inventory</button>
@@ -2118,7 +2133,16 @@
 
     const grid = state.catalogFormat === 'grid';
     container.className = grid ? 'item-grid' : 'item-list';
-    container.innerHTML = notice + visible.map(item => {
+    // Draw the first batch now and the rest as the person scrolls. A redraw
+    // (e.g. the background refresh) keeps however many were already shown.
+    const shown = container.querySelectorAll('[data-item]').length;
+    const firstCount = Math.max(CATALOG_BATCH, shown);
+    const firstBatch = visible.slice(0, firstCount);
+    container.innerHTML = notice + firstBatch.map(item => catalogCardHtml(item, grid)).join('');
+    lazyRenderRest(container, visible.slice(firstCount), grid);
+  }
+
+  function catalogCardHtml(item, grid) {
       const cat = categoryOf(item);
       const inCart = cartQty(item.id);
       const avail = availableQty(item);
@@ -2139,7 +2163,27 @@
           </span>
           ${inCart ? `<span class="in-cart-badge">${inCart} in cart</span>` : '<span class="row-chev" aria-hidden="true">›</span>'}
         </button>`;
-    }).join('');
+  }
+
+  const CATALOG_BATCH = 30;
+  let catalogObserver = null;
+  function lazyRenderRest(container, rest, grid) {
+    if (catalogObserver) { catalogObserver.disconnect(); catalogObserver = null; }
+    if (!rest.length) return;
+    const sentinel = document.createElement('div');
+    sentinel.className = 'catalog-sentinel';
+    sentinel.style.gridColumn = '1 / -1';
+    container.appendChild(sentinel);
+    const drawNext = () => {
+      const batch = rest.splice(0, CATALOG_BATCH);
+      const tmp = document.createElement('div');
+      tmp.innerHTML = batch.map(item => catalogCardHtml(item, grid)).join('');
+      while (tmp.firstChild) container.insertBefore(tmp.firstChild, sentinel);
+      if (!rest.length) { sentinel.remove(); if (catalogObserver) catalogObserver.disconnect(); }
+    };
+    if (!('IntersectionObserver' in window)) { while (rest.length) drawNext(); return; }
+    catalogObserver = new IntersectionObserver(entries => { if (entries.some(e => e.isIntersecting)) drawNext(); }, { rootMargin: '600px 0px' });
+    catalogObserver.observe(sentinel);
   }
 
   function clearCatalogFilters() {
@@ -2219,9 +2263,9 @@
       <div class="sheet-qty-row">
         <span class="field-label" style="margin:0;">How many?</span>
         <div class="qty-stepper">
-          <button type="button" class="qty-btn" data-step="-1" aria-label="Fewer" ${sheetState.qty <= 1 ? 'disabled' : ''}><img class="svg-icon" src="icons/ui/minus.svg" alt=""></button>
+          <button type="button" class="qty-btn" data-step="-1" aria-label="Fewer" ${sheetState.qty <= 1 ? 'disabled' : ''}><svg class="svg-icon" aria-hidden="true" focusable="false"><use href="#i-minus"/></svg></button>
           <input type="number" min="1" max="9999" inputmode="numeric" id="sheet-qty" value="${sheetState.qty}" aria-label="Quantity">
-          <button type="button" class="qty-btn" data-step="1" aria-label="More"><img class="svg-icon" src="icons/ui/plus.svg" alt=""></button>
+          <button type="button" class="qty-btn" data-step="1" aria-label="More"><svg class="svg-icon" aria-hidden="true" focusable="false"><use href="#i-plus"/></svg></button>
         </div>
       </div>
       ${warnings.length ? `<div class="notice warn">${warnings.map(escapeHtml).join('<br>')}${sheetState.action !== 'RESTOCKING' ? '<br><span class="notice-sub">You can still request it. Check with the department first.</span>' : ''}</div>` : ''}
@@ -2309,7 +2353,7 @@
     const checkoutBtn = document.getElementById('cart-checkout-btn');
 
     if (!entries.length) {
-      container.innerHTML = `<div class="empty-state"><img src="brand/ayi/ayi.png" alt="" class="empty-ayi">Your cart is empty.<br><span class="muted">Tap an item in Items to add it.</span></div>`;
+      container.innerHTML = `<div class="empty-state"><img src="brand/ayi/ayi.png" alt="" class="empty-ayi" loading="lazy" decoding="async">Your cart is empty.<br><span class="muted">Tap an item in Items to add it.</span></div>`;
       summary.innerHTML = '';
       checkoutBtn.disabled = true;
       return;
@@ -2332,9 +2376,9 @@
             ${Object.keys(ACTIONS).map(a => `<button type="button" role="radio" aria-checked="${action === a}" class="${action === a ? 'active' : ''}" data-action="${a}">${ACTIONS[a].label}</button>`).join('')}
           </div>
           <div class="qty-stepper">
-            <button type="button" class="qty-btn" data-step="-1" aria-label="Fewer" ${qty <= 1 ? 'disabled' : ''}><img class="svg-icon" src="icons/ui/minus.svg" alt=""></button>
+            <button type="button" class="qty-btn" data-step="-1" aria-label="Fewer" ${qty <= 1 ? 'disabled' : ''}><svg class="svg-icon" aria-hidden="true" focusable="false"><use href="#i-minus"/></svg></button>
             <input type="number" min="1" max="9999" inputmode="numeric" value="${qty}" aria-label="Quantity" data-qty>
-            <button type="button" class="qty-btn" data-step="1" aria-label="More"><img class="svg-icon" src="icons/ui/plus.svg" alt=""></button>
+            <button type="button" class="qty-btn" data-step="1" aria-label="More"><svg class="svg-icon" aria-hidden="true" focusable="false"><use href="#i-plus"/></svg></button>
           </div>
         </div>
         ${warnings.length ? `<div class="cart-warn">⚠ ${warnings.map(escapeHtml).join(' · ')}</div>` : ''}
@@ -2361,7 +2405,7 @@
     if (!entries.length) { showView('cart'); return; }
     const who = state.lastId || {};
     document.getElementById('checkout-who').innerHTML =
-      `<img src="${ayiFor(who.committee)}" alt=""><div><div class="muted">Logged in as</div><b>${escapeHtml(who.name || 'Member')}</b> <span class="muted">${escapeHtml(who.idNumber || '')}${who.committee ? ' · ' + escapeHtml(who.committee) : ''}</span></div>`;
+      `<img src="${ayiFor(who.committee)}" alt="" loading="lazy" decoding="async"><div><div class="muted">Logged in as</div><b>${escapeHtml(who.name || 'Member')}</b> <span class="muted">${escapeHtml(who.idNumber || '')}${who.committee ? ' · ' + escapeHtml(who.committee) : ''}</span></div>`;
     renderActForSelects();
 
     const groups = groupCart(entries);
@@ -2408,7 +2452,7 @@
     submitting = true;
     const btn = document.getElementById('submit-order-btn');
     btn.disabled = true;
-    btn.textContent = 'SUBMITTING…';
+    btn.innerHTML = BUSY_DOTS + ' SUBMITTING';
 
     const results = [];
     for (const g of groupCart(entries)) {
@@ -2479,8 +2523,8 @@
           <div class="contact-role">${escapeHtml(c.role)}</div>
         </div>
         <div class="contact-btn-group">
-          <a class="contact-icon-btn" href="${escapeHtml(c.messenger)}" target="_blank" rel="noopener" title="Message ${escapeHtml(c.name)} on Messenger" aria-label="Message ${escapeHtml(c.name)} on Messenger"><img class="svg-icon" src="icons/ui/messenger.svg" alt=""></a>
-          ${c.telegram ? `<a class="contact-icon-btn" href="${escapeHtml(c.telegram)}" target="_blank" rel="noopener" title="Message ${escapeHtml(c.name)} on Telegram" aria-label="Message ${escapeHtml(c.name)} on Telegram"><img class="svg-icon" src="icons/ui/telegram.svg" alt=""></a>` : ''}
+          <a class="contact-icon-btn" href="${escapeHtml(c.messenger)}" target="_blank" rel="noopener" title="Message ${escapeHtml(c.name)} on Messenger" aria-label="Message ${escapeHtml(c.name)} on Messenger"><svg class="svg-icon" aria-hidden="true" focusable="false"><use href="#i-messenger"/></svg></a>
+          ${c.telegram ? `<a class="contact-icon-btn" href="${escapeHtml(c.telegram)}" target="_blank" rel="noopener" title="Message ${escapeHtml(c.name)} on Telegram" aria-label="Message ${escapeHtml(c.name)} on Telegram"><svg class="svg-icon" aria-hidden="true" focusable="false"><use href="#i-telegram"/></svg></a>` : ''}
         </div>
       </div>`;
   }
