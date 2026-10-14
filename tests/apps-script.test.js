@@ -28,6 +28,8 @@ function mkSheet(name, data) {
     getMaxRows: () => 1000,
     getDataRange: () => ({ getValues: () => data.map(r => r.slice()) }),
     clear: () => { data.length = 0; },
+    insertColumnAfter: n => { data.forEach(r => { while (r.length < n) r.push(''); r.splice(n, 0, ''); }); },
+    r1c1: {},
     getRange: (r, c, nr, nc) => {
       if (typeof r === 'string') {
         return chain({ setFormula: f => { sheet.formulas[r] = f; } });
@@ -40,6 +42,10 @@ function mkSheet(name, data) {
         getNote() { return notes[r + ',' + c] || ''; },
         setNote(n) { notes[r + ',' + c] = n; },
         setBackground(bg) { sheet.bg = sheet.bg || {}; sheet.bg[r] = bg; },
+        getFormulasR1C1() { return Array.from({ length: nr || 1 }, (_, i) => [sheet.r1c1[(r + i) + ',' + c] || '']); },
+        setFormulasR1C1(v) { v.forEach((row, i) => { sheet.r1c1[(r + i) + ',' + c] = row[0]; }); },
+        setFormulaR1C1(f) { sheet.r1c1[r + ',' + c] = f; },
+        copyTo() {},
         getDataValidation() { const v = (sheet.validation || {})[c]; return v ? { getCriteriaValues: () => [v] } : null; }
       });
     }
@@ -97,7 +103,7 @@ const props = {};
 const g = {
   SpreadsheetApp: chain({ getActiveSpreadsheet: () => ss, getUi: () => { throw new Error('no ui'); } }),
   PropertiesService: { getScriptProperties: () => ({ getProperty: k => props[k] || null }) },
-  LockService: { getScriptLock: () => ({ waitLock() {}, releaseLock() {} }) },
+  LockService: { getScriptLock: () => ({ waitLock() {}, tryLock: () => true, releaseLock() {} }) },
   Utilities: { formatDate: () => 'x', getUuid: () => Math.random().toString(16).slice(2) + Date.now().toString(16) },
   CacheService: { getScriptCache: () => ({ get: () => null, put() {}, remove() {} }) },
   Session: { getScriptTimeZone: () => 'Asia/Manila' },
@@ -111,16 +117,26 @@ const get = a => api.doGet({ parameter: a });
 const post = (action, body) => api.doPost({ parameter: { action }, postData: { contents: JSON.stringify(body) } });
 const requests = () => sheets.REQUESTS.data;
 const col = h => requests()[0].indexOf(h);
-const invRow = (item, dept) => sheets.Inventory.data.find(r => r[1] === item && r[5] === dept);
-const STATUS = 7, QTY = 3;
+const ihead = () => sheets.Inventory.data[4];
+const IC = name => ihead().indexOf(name);
+const invRow = (item, dept) => sheets.Inventory.data.find(r => r[IC('Item')] === item && r[IC('Department')] === dept);
+let STATUS = 7, QTY = 3;
 const snapshot = JSON.stringify(sheets.Inventory.data.map(r => r.slice()));
 
-// Setup adds the app tabs only
+// Setup adds the app tabs, plus Item ID + Currently Borrowed columns
 api.setupSheets();
+STATUS = IC('Status'); QTY = IC('Qty');
+assert.strictEqual(IC('Currently Borrowed'), IC('Qty') + 1, 'Currently Borrowed right after Qty');
+assert.ok(IC('Item ID') > IC('Notes'), 'Item ID at the end');
+assert.ok(sheets.Celamerch.data[4].includes('Item ID') && sheets.Consumables.data[4].includes('Item ID'));
+const itemRows = sheets.Inventory.data.slice(5).filter(r => r[IC('Item')]);
+assert.ok(itemRows.every(r => /^INV-\d{4}$/.test(r[IC('Item ID')])), 'every item has an ID');
+assert.strictEqual(new Set(itemRows.map(r => r[IC('Item ID')])).size, itemRows.length, 'IDs are unique');
+assert.match(sheets.Inventory.r1c1['6,' + (IC('Currently Borrowed') + 1)], /^=IF\(RC\d+="","",SUMIFS\(REQUESTS!C\d+,REQUESTS!C\d+,RC\d+,REQUESTS!C\d+,"BORROWING",REQUESTS!C\d+,"Pending"\)\)$/);
 sheets.MEMBERS.data.length = 0; MEMBER_ROWS.forEach(r => sheets.MEMBERS.data.push(r));
 ['MEMBERS', 'ACCESS', 'PROJECTS', 'REQUESTS', 'BORROWED_NOW'].forEach(t => assert.ok(sheets[t], t + ' created'));
 assert.ok(!sheets.CATALOG && !sheets.STORAGE_AREAS && !sheets.CORES, 'no CATALOG/STORAGE_AREAS/CORES tabs');
-assert.strictEqual(JSON.stringify(sheets.Inventory.data), snapshot, 'setup leaves Inventory untouched');
+assert.strictEqual(JSON.parse(snapshot).length, sheets.Inventory.data.length, 'setup adds no rows');
 const mafRow = sheets.PROJECTS.data.findIndex(r => r[0] === 'Mid-Autumn Festival');
 assert.ok(mafRow > 0, 'projects use the sheet\'s event names');
 sheets.PROJECTS.data[mafRow][2] = new Date(today.getTime() + 3 * DAY);
@@ -132,6 +148,7 @@ const find = (title, cat) => items.find(i => i.title === title && i.category ===
 assert.ok(!items.some(i => i.title === 'Plastic Bowls'), 'Returned to Owner rows hidden');
 assert.ok(find('Scissors', 'COMMPUB') && find('Scissors', 'CUL'));
 assert.notStrictEqual(find('Scissors', 'COMMPUB').ref, find('Scissors', 'CUL').ref);
+assert.ok(items.every(i => /^(INV|CON|MER)-\d{4}$/.test(i.ref)), 'refs are permanent IDs');
 assert.strictEqual(find('Scissors', 'CUL').location, 'CUL MAF Box', 'falls back to Specific Spot');
 assert.ok(find('Koi Lanyard', 'Merch') && find('Zodiac Black Shirt (M)', 'Merch'));
 assert.ok(!items.some(i => i.title.startsWith('White Prosper')), 'merch rows without a count skipped');
@@ -160,6 +177,17 @@ items = get({ action: 'inventory' }).items;
 assert.strictEqual(find('Scissors', 'CUL').out, 5);
 assert.strictEqual(find('Scissors', 'COMMPUB').out, 0);
 
+// Permanent IDs: renaming/moving the borrowed item keeps its borrow
+const culScissorsRow = invRow('Scissors', 'CUL');
+culScissorsRow[IC('Item')] = 'Scissors (big)';
+culScissorsRow[IC('Specific Spot')] = 'CUL Bag 2';
+items = get({ action: 'inventory' }).items;
+const renamed = items.find(i => i.ref === cul.ref);
+assert.strictEqual(renamed.title, 'Scissors (big)');
+assert.strictEqual(renamed.out, 5, 'borrow follows the ID after a rename');
+culScissorsRow[IC('Item')] = 'Scissors'; culScissorsRow[IC('Specific Spot')] = 'CUL MAF Box';
+assert.ok(requests().some(x => x[col('Item Ref')] === cul.ref), 'REQUESTS stores the ID');
+
 // Partial borrow keeps In Storage
 const tripods = find('Tripods', 'COMMPUB');
 r = post('submitOrder', { clientId: 'c2', idNumber: '212345', caseType: 'BORROWING', actingAs: 'COMMPUB', items: [{ ref: tripods.ref, title: 'Tripods', qty: 2 }] });
@@ -186,8 +214,11 @@ assert.strictEqual(invRow('Tripods', 'COMMPUB')[QTY], tripodsBefore + 3);
 assert.strictEqual(invRow('Pushpins', 'COMMPUB')[QTY], '*');
 
 // Add-item form options come from the Inventory tab's dropdowns
-sheets.Inventory.validation = { 3: ['Office Supplies', 'Art & Craft Supplies', 'Toiletries & Hygiene'], 6: ['General', 'OP', 'COMMPUB', 'CUL', 'HR'],
-  7: ['Supplies', 'Equipment'], 9: ['Metal Drawer (Top)', 'Shelf'] };
+sheets.Inventory.validation = {
+  [IC('Type') + 1]: ['Office Supplies', 'Art & Craft Supplies', 'Toiletries & Hygiene'],
+  [IC('Department') + 1]: ['General', 'OP', 'COMMPUB', 'CUL', 'HR'],
+  [IC('Category') + 1]: ['Supplies', 'Equipment'],
+  [IC('Storage Area') + 1]: ['Metal Drawer (Top)', 'Shelf'] };
 const opts = get({ action: 'options' }).options;
 assert.deepStrictEqual(opts.departments, ['General', 'OP', 'COMMPUB', 'CUL', 'HR']);
 assert.deepStrictEqual(opts.storageAreas, ['Metal Drawer (Top)', 'Shelf']);
@@ -199,7 +230,9 @@ r = post('addItem', { idNumber: '212346', title: 'Glitter Glue', qty: '12', unit
 assert.ok(r.ok && r.tab === 'Inventory', JSON.stringify(r));
 const added = sheets.Inventory.data[r.row - 1];
 assert.strictEqual(r.row, lastBefore + 1, 'written to the next empty row');
-assert.deepStrictEqual([added[1], added[3], added[5], added[STATUS], added[8], added[9]], ['Glitter Glue', 12, 'CUL', 'In Storage', 'Shelf', 'CUL Bag 1']);
+assert.deepStrictEqual(['Item', 'Qty', 'Department', 'Status', 'Storage Area', 'Specific Spot'].map(h => added[IC(h)]), ['Glitter Glue', 12, 'CUL', 'In Storage', 'Shelf', 'CUL Bag 1']);
+assert.ok(/^INV-\d{4}$/.test(added[IC('Item ID')]) && r.ref === added[IC('Item ID')], 'new item gets the next ID');
+assert.ok(sheets.Inventory.r1c1[r.row + ',' + (IC('Currently Borrowed') + 1)], 'new item gets the borrowed formula');
 assert.ok(get({ action: 'inventory' }).items.some(i => i.title === 'Glitter Glue' && i.ref === r.ref));
 assert.ok(requests().some(x => x[col('Case')] === 'ADDING' && x[col('Item')] === 'Glitter Glue' && x[col('Name')] === 'Maria Santos'));
 
@@ -224,12 +257,12 @@ assert.match(add({ expiry: '1999-01-01' }).error, /Check the year/);
 r = add({ title: 'Glue Sticks', notes: '=HYPERLINK("http://x")', spot: '+ box 2' });
 assert.ok(r.ok, JSON.stringify(r));
 const glueRow = sheets.Inventory.data[r.row - 1];
-assert.strictEqual(glueRow[INV_HEAD.indexOf('Notes')], "'=HYPERLINK(\"http://x\")");
-assert.strictEqual(glueRow[INV_HEAD.indexOf('Specific Spot')], "'+ box 2");
+assert.strictEqual(glueRow[IC('Notes')], "'=HYPERLINK(\"http://x\")");
+assert.strictEqual(glueRow[IC('Specific Spot')], "'+ box 2");
 // A brand-new storage area is accepted and joins the dropdown
 r = add({ title: 'Banner Stand', type: 'Office Supplies', category: 'Supplies', storage: 'Locker 3' });
 assert.ok(r.ok, JSON.stringify(r));
-assert.strictEqual(sheets.Inventory.data[r.row - 1][INV_HEAD.indexOf('Storage Area')], 'Locker 3');
+assert.strictEqual(sheets.Inventory.data[r.row - 1][IC('Storage Area')], 'Locker 3');
 
 // Expiry date → Consumables tab
 r = post('addItem', { idNumber: '212347', title: 'Hand Sanitizer', qty: '6', unit: 'bottles', department: 'HR', type: 'Toiletries & Hygiene', category: 'Supplies', storage: 'Shelf', expiry: new Date(today.getTime() + 60 * DAY).toISOString() });
@@ -285,6 +318,29 @@ assert.match(mail[0].body, /Sunscreen.*expires in 5 days/);
 assert.ok(mail.some(m => m.to === 'juan@example.com'), 'borrower emailed');
 assert.strictEqual(api.flagOverdue().reminded, 0, 'no repeat overdue reminder the same day');
 
+// ---- Permanent IDs: hand-added rows, copy-pasted IDs, old REQUESTS refs ----
+const lastItem = sheets.Inventory.data.length;
+const copied = sheets.Inventory.data[5].slice();             // copy-paste of an existing row (same ID)
+copied[IC('Item')] = 'Hand Added Thing';
+sheets.Inventory.data.push(copied);
+const fresh = blank(ihead().length); fresh[IC('Item')] = 'Typed In Sheet'; fresh[IC('Department')] = 'HR';
+sheets.Inventory.data.push(fresh);
+items = get({ action: 'inventory' }).items;
+const handAdded = items.find(i => i.title === 'Hand Added Thing'), typed = items.find(i => i.title === 'Typed In Sheet');
+assert.ok(handAdded && typed && handAdded.ref !== sheets.Inventory.data[5][IC('Item ID')] && /^INV-/.test(typed.ref), 'new + duplicate IDs fixed');
+assert.ok(sheets.Inventory.r1c1[(lastItem + 2) + ',' + (IC('Currently Borrowed') + 1)], 'formula added to hand-added row');
+sheets.Inventory.data.splice(lastItem);
+
+// Old REQUESTS rows (from before IDs existed) are repointed at the IDs
+const lampRow = invRow('Tripods', 'COMMPUB');
+const legacy = 'inventory:tripods|commpub|metaldrawer2ndfromtop|';
+const oldLine = requests()[1].slice(); oldLine[col('Item Ref')] = legacy; oldLine[col('Line ID')] = 'OLD-1';
+requests().push(oldLine);
+lampRow[IC('Item ID')] = '';                                   // any missing ID triggers the repair pass
+get({ action: 'inventory' });
+assert.strictEqual(requests().find(x => x[col('Line ID')] === 'OLD-1')[col('Item Ref')], invRow('Tripods', 'COMMPUB')[IC('Item ID')]);
+requests().splice(requests().findIndex(x => x[col('Line ID')] === 'OLD-1'), 1);
+
 // ---- Review fixes ----
 // Writes must be POST
 assert.match(get({ action: 'submitOrder', idNumber: '212345', caseType: 'BORROWING' }).error, /Use POST/);
@@ -302,8 +358,11 @@ assert.strictEqual(invRow('Scissors', 'COMMPUB')[QTY], 1, 'COMMPUB scissors unto
 post('submitOrder', { clientId: 'w3', idNumber: '212345', caseType: 'BORROWING', actingAs: 'COMMPUB', items: [{ ref: pins.ref, title: pins.title, qty: 5 }] });
 assert.strictEqual(invRow('Pushpins', 'COMMPUB')[STATUS], 'In Storage');
 // Chinese item names get distinct refs
-r = add({ title: '红包 Red Envelopes', type: 'Office Supplies', category: 'Supplies', storage: 'Shelf' });
-assert.ok(r.ok && /红包/.test(r.ref), JSON.stringify(r));
+r = add({ title: '红包', type: 'Office Supplies', category: 'Supplies', storage: 'Shelf' });
+assert.ok(r.ok, JSON.stringify(r));
+r = add({ title: '灯笼', type: 'Office Supplies', category: 'Supplies', storage: 'Shelf' });
+assert.ok(r.ok, 'a different Chinese name in the same spot is not a duplicate: ' + JSON.stringify(r));
+assert.match(add({ title: '灯笼', type: 'Office Supplies', category: 'Supplies', storage: 'Shelf' }).error, /already in the inventory/);
 // History reports when a line was resolved
 assert.ok(get({ action: 'history' }).records.some(x => x.resolved && x.resolvedAt));
 // Committee text can't become a formula in REQUESTS

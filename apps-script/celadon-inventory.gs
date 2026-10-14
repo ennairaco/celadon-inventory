@@ -56,9 +56,9 @@
 var CELA = {
   // Item tabs, in the order the app lists them.
   SOURCES: [
-    { tab: 'Inventory', kind: 'inventory', anchor: ['Item'] },
-    { tab: 'Consumables', kind: 'consumable', anchor: ['Item'] },
-    { tab: 'Celamerch', kind: 'merch', anchor: ['Merch Design'] }
+    { tab: 'Inventory', kind: 'inventory', anchor: ['Item'], prefix: 'INV' },
+    { tab: 'Consumables', kind: 'consumable', anchor: ['Item'], prefix: 'CON' },
+    { tab: 'Celamerch', kind: 'merch', anchor: ['Merch Design'], prefix: 'MER' }
   ],
   MEMBERS: 'MEMBERS',
   ACCESS: 'ACCESS',
@@ -106,6 +106,8 @@ var DEPT_ALIASES = {
 // Header aliases so a renamed column (or the existing members list) still works.
 var COLS = {
   item: ['Item', 'Item Name', 'Title'],
+  itemId: ['Item ID'],
+  borrowed: ['Currently Borrowed'],
   type: ['Type'],
   category: ['Category'],
   qty: ['Qty', 'Quantity', 'Count', 'Stock'],
@@ -434,30 +436,181 @@ function resolve_(p) {
 
 // Every listable item row across the item tabs. `ref` identifies a row by
 // its content (not its row number) so sorting/filtering the sheet is safe.
+// Every listable item row across the item tabs. `ref` is the row's
+// permanent Item ID (e.g. INV-0042) once setupSheets has added that column;
+// before that it falls back to a content key (tab + item + dept + spot).
+var healingIds_ = false;
 function catalogEntries_(includeHidden) {
   var entries = [];
-  var seen = {};
+  var needsIds = false;
   CELA.SOURCES.forEach(function (src) {
     var sheet = sheet_(src.tab, false);
     if (!sheet) return;
     var t = tableFromSheet_(sheet, src.anchor);
     var expiryCol = colFor_(t, COLS.expiry);
+    var idCol = colFor_(t, COLS.itemId);
+    var seen = {};
+    var ids = {};
     t.rows.forEach(function (r, i) {
       var e = src.kind === 'merch' ? merchEntry_(t, r) : itemEntry_(t, r);
       if (!e) return;
       e.kind = src.kind;
+      e.prefix = src.prefix;
       e.t = t;
       e.i = i;
       e.expiry = expiryCol != null && r[expiryCol] instanceof Date ? r[expiryCol] : null;
-      // Numbered before hiding Used Up rows, so hiding one never shifts another's ref.
-      var base = src.kind + ':' + [e.title, e.category, e.storage, e.spot].map(key_).join('|');
-      seen[base] = (seen[base] || 0) + 1;
-      e.ref = seen[base] > 1 ? base + '#' + seen[base] : base;
+      // Content key, numbered before hiding Used Up rows (the pre-ID scheme;
+      // still used to match old REQUESTS rows and to spot duplicate adds).
+      e.contentKey = src.kind + ':' + [e.title, e.category, e.storage, e.spot].map(key_).join('|');
+      seen[e.contentKey] = (seen[e.contentKey] || 0) + 1;
+      e.legacyRef = seen[e.contentKey] > 1 ? e.contentKey + '#' + seen[e.contentKey] : e.contentKey;
+      e.id = idCol != null ? normalize_(r[idCol]) : '';
+      if (idCol != null && (!e.id || ids[e.id])) needsIds = true; // missing, or copy-pasted duplicate
+      if (e.id) ids[e.id] = true;
+      e.ref = e.id || e.legacyRef;
       if (!includeHidden && CELA.HIDDEN_STATUSES.indexOf(key_(e.status)) !== -1) return;
       entries.push(e);
     });
   });
+  // Rows added by hand (or copy-pasted) get an ID on the next read.
+  if (needsIds && !healingIds_) {
+    healingIds_ = true;
+    try { if (assignItemIds_()) return catalogEntries_(includeHidden); }
+    finally { healingIds_ = false; }
+  }
   return entries;
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// Permanent item IDs + "Currently Borrowed"
+// ═══════════════════════════════════════════════════════════════════════
+
+// Gives every item row without an ID (or with a duplicated one) a new
+// INV-/CON-/MER- number, moves old REQUESTS rows onto the IDs, and makes
+// sure Inventory's Currently Borrowed formulas are in place.
+// Returns true if anything was written.
+function assignItemIds_() {
+  var lock = LockService.getScriptLock();
+  if (!lock.tryLock(15000)) return false;
+  var wrote = false;
+  try {
+    var legacyToId = {};
+    CELA.SOURCES.forEach(function (src) {
+      var sheet = sheet_(src.tab, false);
+      if (!sheet) return;
+      var t = tableFromSheet_(sheet, src.anchor);
+      var idCol = colFor_(t, COLS.itemId);
+      if (idCol == null || !t.rows.length) return;
+      var pattern = new RegExp('^' + src.prefix + '-(\\d+)$');
+      var max = 0;
+      t.rows.forEach(function (r) {
+        var m = normalize_(r[idCol]).match(pattern);
+        if (m) max = Math.max(max, Number(m[1]));
+      });
+      var used = {};
+      var seen = {};
+      var tabChanged = false;
+      var column = t.rows.map(function (r) {
+        var e = src.kind === 'merch' ? merchEntry_(t, r) : itemEntry_(t, r);
+        var id = normalize_(r[idCol]);
+        if (!e) return [id];
+        var key = src.kind + ':' + [e.title, e.category, e.storage, e.spot].map(key_).join('|');
+        seen[key] = (seen[key] || 0) + 1;
+        var legacy = seen[key] > 1 ? key + '#' + seen[key] : key;
+        if (!id || used[id]) { id = src.prefix + '-' + ('000' + (++max)).slice(-4); tabChanged = true; }
+        used[id] = true;
+        legacyToId[legacy] = id;
+        return [id];
+      });
+      if (tabChanged) { sheet.getRange(t.headerRow + 2, idCol + 1, column.length, 1).setValues(column); wrote = true; }
+      if (src.kind === 'inventory') wrote = ensureBorrowedFormulas_(sheet) || wrote;
+    });
+
+    // Old REQUESTS rows pointed at content keys; repoint them at the IDs.
+    var req = sheet_(CELA.REQUESTS, false);
+    if (req) {
+      var rt = requestsTable_();
+      var refCol = rt.index[key_('Item Ref')];
+      if (refCol != null && rt.rows.length) {
+        var changed = false;
+        var refs = rt.rows.map(function (r) {
+          var ref = String(r[refCol] || '');
+          if (ref.indexOf(':') !== -1 && legacyToId[ref]) { changed = true; return [legacyToId[ref]]; }
+          return [ref];
+        });
+        if (changed) { req.getRange(rt.headerRow + 2, refCol + 1, refs.length, 1).setValues(refs); wrote = true; }
+      }
+    }
+  } finally {
+    lock.releaseLock();
+  }
+  return wrote;
+}
+
+// Currently Borrowed = sum of this item's pending borrows in REQUESTS, as a
+// formula on each item row (so it's always live and survives sorting).
+function borrowedFormulaR1C1_(t) {
+  var idCol = colFor_(t, COLS.itemId);
+  var rt = requestsTable_();
+  var C = function (h) { return rt.index[key_(h)] + 1; };
+  if (idCol == null || [C('Qty'), C('Item Ref'), C('Case'), C('Status')].some(isNaN)) return null;
+  return '=IF(RC' + (idCol + 1) + '="","",SUMIFS(' + CELA.REQUESTS + '!C' + C('Qty') + ',' +
+    CELA.REQUESTS + '!C' + C('Item Ref') + ',RC' + (idCol + 1) + ',' +
+    CELA.REQUESTS + '!C' + C('Case') + ',"BORROWING",' +
+    CELA.REQUESTS + '!C' + C('Status') + ',"' + CELA.STATUS.PENDING + '"))';
+}
+
+function ensureBorrowedFormulas_(sheet) {
+  var t = tableFromSheet_(sheet, ['Item']);
+  var col = colFor_(t, COLS.borrowed);
+  var itemCol = colFor_(t, COLS.item);
+  var formula = borrowedFormulaR1C1_(t);
+  if (col == null || !formula || !t.rows.length) return false;
+  var range = sheet.getRange(t.headerRow + 2, col + 1, t.rows.length, 1);
+  var current = range.getFormulasR1C1();
+  var changed = false;
+  var out = t.rows.map(function (r, i) {
+    var want = normalize_(r[itemCol]) ? formula : '';
+    if ((current[i] && current[i][0]) !== want) changed = true;
+    return [want];
+  });
+  if (changed) range.setFormulasR1C1(out);
+  return changed;
+}
+
+// Adds the Item ID column (end of each item tab) and Inventory's Currently
+// Borrowed column (right after Qty), if they're missing. Run via setupSheets.
+function ensureItemColumns_() {
+  CELA.SOURCES.forEach(function (src) {
+    var sheet = sheet_(src.tab, false);
+    if (!sheet) return;
+    var t = tableFromSheet_(sheet, src.anchor);
+    var hr = t.headerRow + 1;
+    if (src.kind === 'inventory' && colFor_(t, COLS.borrowed) == null) {
+      var qtyCol = colFor_(t, COLS.qty);
+      if (qtyCol != null) {
+        sheet.insertColumnAfter(qtyCol + 1);
+        sheet.getRange(hr, qtyCol + 1).copyTo(sheet.getRange(hr, qtyCol + 2), SpreadsheetApp.CopyPasteType.PASTE_FORMAT, false);
+        sheet.getRange(hr, qtyCol + 2).setValue('Currently Borrowed')
+          .setNote('Filled in by the Celadon Inventory app: units borrowed and not yet returned. Don\'t type here.');
+        t = tableFromSheet_(sheet, src.anchor);
+      }
+    }
+    if (colFor_(t, COLS.itemId) == null) {
+      var headerCells = sheet.getRange(hr, 1, 1, sheet.getLastColumn()).getValues()[0];
+      var last = 0;
+      headerCells.forEach(function (v, i) { if (normalize_(v)) last = i + 1; });
+      sheet.insertColumnAfter(last);
+      sheet.getRange(hr, last).copyTo(sheet.getRange(hr, last + 1), SpreadsheetApp.CopyPasteType.PASTE_FORMAT, false);
+      sheet.getRange(hr, last + 1).setValue('Item ID')
+        .setNote('Permanent ID used by the Celadon Inventory app to track borrows. Don\'t edit or copy.');
+      try {
+        var protection = sheet.getRange(hr + 1, last + 1, Math.max(sheet.getMaxRows() - hr, 1), 1).protect();
+        protection.setDescription('Item IDs (Celadon Inventory app)').setWarningOnly(true);
+      } catch (e) { /* protection is a nicety */ }
+    }
+  });
+  assignItemIds_();
 }
 
 function itemEntry_(t, r) {
@@ -504,10 +657,10 @@ function merchEntry_(t, r) {
 
 function findEntry_(entries, ref, title, location) {
   if (ref) {
-    var byRef = entries.filter(function (e) { return e.ref === ref; })[0];
-    // A known ref that's gone (renamed/moved row) must not fall back to some
-    // other department's same-name row.
-    if (byRef || /^(inventory|consumable|merch):/.test(ref)) return byRef || null;
+    var byRef = entries.filter(function (e) { return e.ref === ref || e.id === ref || e.legacyRef === ref; })[0];
+    // A known ref that's gone must not fall back to some other department's
+    // same-name row.
+    if (byRef || /^(inventory|consumable|merch):|^(INV|CON|MER)-\d+$/.test(ref)) return byRef || null;
   }
   var want = key_(title);
   var loc = key_(location);
@@ -615,7 +768,7 @@ function addItem_(p) {
     var stamp = Utilities.formatDate(now, Session.getScriptTimeZone(), 'MMM d, yyyy');
     if (v.newStorage) addStorageOption_(v.storage);
 
-    var existing = catalogEntries_(true).filter(function (e) { return e.ref === base; })[0];
+    var existing = catalogEntries_(true).filter(function (e) { return e.contentKey === base; })[0];
     if (existing) {
       if (CELA.HIDDEN_STATUSES.indexOf(key_(existing.status)) === -1) {
         throw new Error(v.title + ' (' + v.dept + (v.storage || v.spot ? ', ' + (v.storage || v.spot) : '') + ') is already in the inventory. Use "Add stock" at checkout to add more.');
@@ -628,8 +781,8 @@ function addItem_(p) {
       });
       setStatus_(existing, CELA.ITEM_STATUS.IN);
       annotateQty_(existing, '[ADDED] ' + v.qtyText + ' by ' + member.name + ' (' + stamp + ')');
-      logAdd_(member, id, v, base, now);
-      return { ok: true, ref: base, tab: tabName, revived: true };
+      logAdd_(member, id, v, existing.ref, now);
+      return { ok: true, ref: existing.ref, tab: tabName, revived: true };
     }
 
     var sheet = sheet_(tabName);
@@ -650,12 +803,25 @@ function addItem_(p) {
       var col = colFor_(t, pair[0]);
       if (col != null && col < width && pair[1] != null) row[col] = pair[1];
     });
+    // Permanent ID for the new row.
+    var newRef = base;
+    var idCol = colFor_(t, COLS.itemId);
+    if (idCol != null && idCol < width) {
+      var prefix = kind === 'consumable' ? 'CON' : 'INV';
+      var max = 0;
+      t.rows.forEach(function (r) { var m = normalize_(r[idCol]).match(new RegExp('^' + prefix + '-(\\d+)$')); if (m) max = Math.max(max, Number(m[1])); });
+      newRef = prefix + '-' + ('000' + (max + 1)).slice(-4);
+      row[idCol] = newRef;
+    }
     sheet.getRange(rowNum, 1, 1, width).setValues([row]);
     var qtyCol = colFor_(t, COLS.qty);
     if (qtyCol != null) sheet.getRange(rowNum, qtyCol + 1).setNote('[ADDED] by ' + member.name + ' (' + stamp + ')');
+    var borrowedCol = colFor_(t, COLS.borrowed);
+    var formula = borrowedCol != null ? borrowedFormulaR1C1_(t) : null;
+    if (formula) sheet.getRange(rowNum, borrowedCol + 1).setFormulaR1C1(formula);
 
-    logAdd_(member, id, v, base, now);
-    return { ok: true, ref: base, tab: tabName, row: rowNum };
+    logAdd_(member, id, v, newRef, now);
+    return { ok: true, ref: newRef, tab: tabName, row: rowNum };
   } finally {
     lock.releaseLock();
   }
@@ -1068,11 +1234,12 @@ function setupSheets() {
     });
 
   setupBorrowedNow_();
+  ensureItemColumns_();
   if (Session.getScriptTimeZone() !== 'Asia/Manila') {
     notify_('Heads up: this script\'s time zone is ' + Session.getScriptTimeZone() + '. Set it to (GMT+08:00) Manila in Project Settings so due dates land on the right day.');
   }
   notify_('App tabs are ready (' + tabs.concat(CELA.BORROWED).join(', ') + '). ' +
-    'Inventory, Celamerch and Consumables were not changed. Next: add members and officers (ACCESS).');
+    'Item tabs now have an Item ID column, and Inventory has Currently Borrowed after Qty. Next: add officers (ACCESS).');
 }
 
 function ensureSheet_(name) {

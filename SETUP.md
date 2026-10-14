@@ -20,6 +20,10 @@ Takes about 15 minutes. You need edit access to the **'26-'27 Inventory Tracker*
 | Consumables | Same as Inventory. Items with an **Expiry Date** within 14 days get flagged. |
 | MEMBERS, ACCESS, PROJECTS, REQUESTS, BORROWED_NOW | New tabs that `setupSheets` adds for the app. |
 
+**Item ID** (last column of Inventory, Consumables and Celamerch) is a permanent ID like `INV-0042` that the app uses to track borrows, so renaming, moving or sorting items is safe. Don't edit or copy these cells; the column has a warning if you try. Rows you add by hand get an ID automatically, and copy-pasted duplicate IDs are fixed the same way.
+
+**Currently Borrowed** (right after Qty in Inventory) is a live formula: units borrowed and not yet returned. **Qty** stays the total the org owns.
+
 The app only adds rows through **Add to inventory** (to the next empty row of Inventory or Consumables) and never deletes rows. Re-adding something marked *Used Up* brings its old row back instead of duplicating it.
 
 ## 1. Add the script
