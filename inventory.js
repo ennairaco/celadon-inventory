@@ -897,7 +897,7 @@
   // Default Apps Script URL — pre-fills Settings and unlocks the app on first
   // load. Paste the /exec URL of the Celadon Inventory deployment here
   // (see SETUP.md). Still editable at any time from Settings.
-  const DEFAULT_INVENTORY_URL = '';
+  const DEFAULT_INVENTORY_URL = 'https://script.google.com/macros/s/AKfycbzNeUVhEX0hgdte8ix6ztLUkJHGbbzvTcWFV9s9X2bniEK1V_i8Ox5a7zXgiaGhS0kHWg/exec';
 
   function getInventoryScriptUrl() {
     try {
