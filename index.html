@@ -15,7 +15,7 @@
 <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Montserrat:ital,wght@0,400;0,500;0,600;0,700;0,800;1,600&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="inventory.css?v=5">
+<link rel="stylesheet" href="inventory.css?v=6">
 </head>
 <body>
 <div class="desktop-frame">
@@ -206,13 +206,13 @@
       <div class="catalog-search-row">
         <div class="catalog-search-wrap">
           <img class="svg-icon catalog-search-icon" src="icons/ui/search.svg" alt="">
-          <input type="text" id="catalog-search" class="catalog-search-input" placeholder="Search items, category, location…" autocomplete="off">
+          <input type="text" id="catalog-search" class="catalog-search-input" placeholder="Search items, type, event, location…" autocomplete="off">
           <button class="catalog-search-clear" id="catalog-search-clear" aria-label="Clear search" style="display:none;"><img class="svg-icon" src="icons/ui/close.svg" alt=""></button>
         </div>
         <select id="catalog-sort" class="catalog-sort-select">
           <option value="default">Sort: Default</option>
           <option value="name">Sort: Name (A–Z)</option>
-          <option value="category">Sort: Category</option>
+          <option value="category">Sort: Department</option>
           <option value="location">Sort: Location</option>
         </select>
       </div>
@@ -327,6 +327,6 @@
   </div>
 
 </div>
-<script src="inventory.js?v=6"></script>
+<script src="inventory.js?v=7"></script>
 </body>
 </html>

@@ -1,66 +1,61 @@
 # Setting up Celadon Inventory
 
-Takes about 20 minutes. You need edit access to the Celadon inventory Google Sheet and a GitHub account (for hosting).
+Takes about 15 minutes. You need edit access to the **'26-'27 Inventory Tracker** Google Sheet.
 
 ## How it works (for members)
 
 1. Log in with your 6-digit Ateneo ID. Only IDs in the member list can log in.
 2. Pick who you're **acting for**. Every borrow or use-up is logged under a project or department, never personally. You can act for:
-   - your own department (from the member list),
+   - your own department,
    - any project you're listed under in **CORES**,
    - anything, if you're an officer in **ACCESS**.
-3. Find items in **CelaCart**, then check out as **Borrow**, **Use up**, or **Return**.
-4. **Borrowed now** lists everything that's out, with overdue items in red. Anyone from that project/department (or the borrower) can tap **Mark returned**.
+3. Find items in **CelaCart** (everything in Inventory, Celamerch and Consumables), then check out as **Borrow**, **Use up**, or **Return**.
+4. **Borrowed now** lists what's out, with overdue items in red. Anyone from that project/department (or the borrower) can tap **Mark returned**.
 
-## 1. Prepare the sheet
+## What the app does to your sheet
 
-1. Open the inventory sheet (your copy of MEA's sheet, or a blank one).
-2. **Extensions → Apps Script.** Delete the starter code and paste in all of `apps-script/celadon-inventory.gs`. If the copied MEA sheet came with its own script files, delete those first: two `doGet` functions will silently break each other.
-3. **Using the existing Celadon members sheet (recommended):** in Apps Script, open **Project Settings → Script properties** and add:
-   - `MEMBERS_SPREADSHEET_ID`: the long ID in that sheet's URL (`/d/<this part>/edit`)
-   - `MEMBERS_SHEET_NAME`: the tab name (leave out to use the first tab)
+| Tab | What the app does |
+|---|---|
+| Inventory | Reads every row. Changes only these cells: **Qty** (lowered on "Use up"), **Status** (`Out` when every unit is borrowed, back to `In Storage` when returned, `Used Up` at 0), and a note on the Qty cell recording who did what. Rows marked *Returned to Owner* or *Used Up* are hidden in the app. |
+| Celamerch | Reads rows that have a Count. "Use up" lowers **Count** (e.g. merch given out). |
+| Consumables | Same as Inventory. Items with an **Expiry Date** within 14 days get flagged. |
+| MEMBERS, ACCESS, PROJECTS, CORES, REQUESTS, BORROWED_NOW | New tabs that `setupSheets` adds for the app. |
 
-   The script finds columns by header name: `ID Number` / `ID No.` / `Student Number`, `Name` (or `First Name` + `Last Name`), `Department`, and `Email`. Department can be the code (`COMMPUB`) or the full name (*Communications and Publications*). Whoever deploys the script needs at least view access to that sheet.
-4. Select `setupSheets` in the function dropdown, press **Run**, and approve the permissions prompt. It creates any missing tabs and columns and never deletes data:
-   - **CATALOG**: one row per item. To start from the old 2026 tracker, import `apps-script/catalog-seed-from-old-tracker.csv` (File → Import → Upload → *Replace current sheet* while on CATALOG). That's 186 items, merch and MAF included. 72 of them have no storage area yet, so fill those in.
-   - **STORAGE_AREAS**: the fixed list behind the CATALOG *Storage Area* dropdown. On first run it's filled from whatever CATALOG already uses, so import CATALOG first, or import `apps-script/storage-areas-seed.csv` here. Add a row to create a new area.
-   - **MEMBERS**: only created when you're *not* using the external members sheet.
-   - **ACCESS**: officers (`ADMIN` or `OFFICER`) plus their email. Officers can act for any project, and they receive the overdue digest.
-   - **PROJECTS**: Celadon's 6 departments and 14 projects, already filled in. Untick `Active` to hide one. Set **Event End Date** so project borrows fall due the day after the event.
-   - **CORES**: `ID Number | Name | Project | Role`. One row per core per project.
-   - **REQUESTS**: written by the app. Don't edit the column headers.
-   - **BORROWED_NOW**: a live, read-only view of everything still out, with overdue rows in red.
+The app never adds or deletes rows in Inventory, Celamerch or Consumables. Adding new items is still done in the sheet.
+
+## 1. Add the script
+
+1. Open the **'26-'27 Inventory Tracker** sheet, then **Extensions → Apps Script**.
+2. Delete the starter code, paste in all of `apps-script/celadon-inventory.gs`, and save.
+3. Pick **`setupSheets`** in the function dropdown, then press **Run**. Approve the permissions prompt; Google will warn that the app isn't verified, so click *Advanced → Go to project*.
+4. Back in the sheet, fill in the new tabs:
+   - **MEMBERS**: `ID Number | Name | Department | Position | Email`. Add yourself first so you can test. Later you can switch to the real members sheet instead (see below).
+   - **ACCESS**: officers (`ADMIN` or `OFFICER`) and their email. Officers can act for anything and receive the daily email.
+   - **PROJECTS**: already filled with the 6 departments, General, and the 14 events (same names as the Inventory tab's Event column). Set **Event End Date** so project borrows fall due the day after the event. Untick **Active** to hide a project.
+   - **CORES**: one row per core per project, e.g. `212345 | Juan Dela Cruz | Mid-Autumn Festival | Core`.
 5. Reload the sheet. A **Celadon Inventory** menu appears.
 
-## 2. Turn on overdue reminders
+**Later, to use the existing members sheet instead of MEMBERS:** in Apps Script, open **Project Settings → Script properties** and add `MEMBERS_SPREADSHEET_ID` (the long ID in that sheet's URL) and `MEMBERS_SHEET_NAME` (its tab name). Columns are found by name: ID Number / Student Number, Name (or First + Last Name), Department, Email.
 
-1. **Celadon Inventory → Turn on daily overdue reminders (8 AM)**, then approve the permissions prompt.
-2. Script properties (all optional):
-   - `NOTIFY_EMAILS`: who gets the daily digest (comma-separated). Defaults to the emails in ACCESS.
-   - `EMAIL_BORROWERS = true`: also email the borrower and every core of that project.
-   - `BORROW_DAYS`: how long a borrow can stay out when its project has no Event End Date (default 7).
-   - `REMIND_EVERY_DAYS`: how often an overdue item is re-reminded (default 3).
-
-Overdue rows are also highlighted in REQUESTS, and they show in red in the app.
-
-## 3. Deploy the script
+## 2. Deploy it
 
 1. **Deploy → New deployment → Web app**. Execute as: **Me**. Who has access: **Anyone**.
-2. Copy the `/exec` URL.
+2. Copy the `/exec` URL and send it to whoever maintains the app code. It goes into `DEFAULT_INVENTORY_URL` in `inventory.js`, then gets pushed to GitHub.
 3. (Recommended) Add the script property `ACCESS_TOKEN` with any secret phrase. Members enter it once under the app's Settings.
 4. After any script change: **Deploy → Manage deployments → Edit → New version**. The URL stays the same.
 
-## 4. Point the app at it and host it on GitHub
+## 3. Turn on daily reminders
 
-1. Paste the `/exec` URL into `DEFAULT_INVENTORY_URL` in `inventory.js`.
-2. Create a GitHub repo (e.g. under a Celadon account), push this folder, then **Settings → Pages → Deploy from branch → main / root**.
-3. Share `https://<account>.github.io/<repo>/`. On phones: Settings → *Download Celadon App*, or Share → Add to Home Screen on iPhone.
-4. After changing any app file, bump `CACHE_NAME` in `sw.js` (e.g. `cela-app-v3`) so phones pick up the new version.
+**Celadon Inventory → Turn on daily reminders (8 AM)**. Each morning the script:
+- highlights overdue borrows in REQUESTS,
+- emails a digest of overdue borrows and expiring Consumables to the ACCESS emails, or to `NOTIFY_EMAILS` if you set it.
 
-## How requests are recorded
+Optional script properties:
+- `EMAIL_BORROWERS = true`: also email borrowers and project cores.
+- `BORROW_DAYS` (default 7): how long a borrow can stay out when its project has no event end date.
+- `REMIND_EVERY_DAYS` (default 3): how often an overdue item is re-reminded.
+- `EXPIRY_WARN_DAYS` (default 14): how early expiring Consumables are flagged.
 
-| App action | REQUESTS row | CATALOG |
-|---|---|---|
-| Borrow | Status `Pending`, with a `Due` date | Note on the Quantity cell. The app shows "N out" on the item |
-| Use up | Status `Consumed` | Quantity reduced (turn off with `DEDUCT_ON_CONSUME = false`) |
-| Return / Mark returned | The project's oldest matching `Pending` borrow flips to `Returned` (+ who, when) | Note on the Quantity cell |
+## App hosting
+
+The app is on GitHub Pages: https://ennairaco.github.io/celadon-inventory/ (repo `ennairaco/celadon-inventory`). After changing any app file, bump `CACHE_NAME` in `sw.js` so phones pick up the new version.

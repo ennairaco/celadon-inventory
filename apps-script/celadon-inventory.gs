@@ -2,25 +2,19 @@
  * Ateneo Celadon — Inventory (CelaCart) Apps Script backend
  *
  * One script for the whole app: login, catalog, projects, requests, history,
- * project/department accountability and overdue reminders. Adapted from MEA's
- * app (github.com/David-GY/mea-id), minus the ID Tracker and SUS Dashboard,
- * which are MEA-specific.
+ * project/department accountability, overdue and expiry reminders. Adapted
+ * from MEA's app (github.com/David-GY/mea-id), minus the ID Tracker and SUS
+ * Dashboard, which are MEA-specific.
  *
- * Every borrow or use-up is made *for* a project or department ("acting
- * for"), never personally. A member can act for:
- *   - their own department (Department column of the member list),
- *   - any project/department they're listed under in CORES,
- *   - anything, if they're ADMIN or OFFICER in ACCESS.
- * Anyone who can act for that project/department can mark its borrows returned.
+ * Built around the "'26-'27 Inventory Tracker" sheet. The app reads (and
+ * updates Qty/Status on) these existing tabs — it never adds or removes rows:
+ *   Inventory     Item | Type | Qty | Unit | Department | Category | Status |
+ *                 Storage Area | Specific Spot | Event | Owned/Borrowed | Notes
+ *   Celamerch     School Year | Merch Design | Merch Type | Size | Count | Damaged Qty | Notes
+ *   Consumables   Item | Type | Qty | Unit | Department | Storage Area | Specific Spot | Expiry Date | Notes
+ * Header rows are found by name, so title/guideline rows above them are fine.
  *
- * Bind this script to the Celadon inventory spreadsheet (Extensions > Apps
- * Script), run `setupSheets` once, then Deploy > New deployment > Web app,
- * execute as Me, access: Anyone. See SETUP.md.
- *
- * Tabs (created/repaired by setupSheets; headers are matched by name, so
- * columns can be reordered and extra columns are ignored):
- *   CATALOG        Item | Category | Quantity | Storage Area | Specific Location | Notes | Last Updated
- *   STORAGE_AREAS  Storage Area | Description       (drives the CATALOG dropdown)
+ * Tabs this script adds (setupSheets; never touches the three above):
  *   MEMBERS        ID Number | Name | Department | Position | Email
  *                  (or point MEMBERS_SPREADSHEET_ID at the existing members sheet)
  *   ACCESS         ID Number | Name | Level | Email   (ADMIN or OFFICER)
@@ -29,11 +23,18 @@
  *   REQUESTS       written by the app — one row per item per request
  *   BORROWED_NOW   live view of everything still out (formula, read-only)
  *
+ * Every borrow or use-up is made *for* a project or department ("acting
+ * for"), never personally. A member can act for:
+ *   - their own department (Department column of the member list),
+ *   - any project/department they're listed under in CORES,
+ *   - anything, if they're ADMIN or OFFICER in ACCESS.
+ * Anyone who can act for that project/department can mark its borrows returned.
+ *
  * Routes:
  *   GET  ?action=login&id=123456   member lookup (+ projects/depts they can act for)
- *   GET  ?action=inventory         catalog rows with how many are out
+ *   GET  ?action=inventory         items from Inventory + Celamerch + Consumables
  *   GET  ?action=projects          active project/department list
- *   GET  ?action=history           borrow/consume records
+ *   GET  ?action=history           borrow/use-up records
  *   POST ?action=submitOrder       borrow / use up / return request
  *   POST ?action=resolve           mark one borrowed line as returned
  *
@@ -42,18 +43,23 @@
  *   SPREADSHEET_ID           only if the script is standalone instead of bound
  *   MEMBERS_SPREADSHEET_ID   read members from another spreadsheet
  *   MEMBERS_SHEET_NAME       tab in that spreadsheet (default: first tab)
- *   DEDUCT_ON_CONSUME        'false' to stop "Use up" requests lowering Quantity
+ *   DEDUCT_ON_CONSUME        'false' to stop "Use up" requests lowering Qty
  *   BORROW_DAYS              days a borrow may stay out when the project has
  *                            no Event End Date (default 7)
- *   REMIND_EVERY_DAYS        days between repeat reminders (default 3)
- *   NOTIFY_EMAILS            comma-separated inbox(es) for the daily overdue digest
+ *   REMIND_EVERY_DAYS        days between repeat overdue reminders (default 3)
+ *   EXPIRY_WARN_DAYS         flag Consumables expiring within this many days (default 14)
+ *   NOTIFY_EMAILS            comma-separated inbox(es) for the daily digest
  *                            (default: emails in ACCESS)
  *   EMAIL_BORROWERS          'true' to also email the borrower and the project's cores
  */
 
 var CELA = {
-  CATALOG: 'CATALOG',
-  STORAGE: 'STORAGE_AREAS',
+  // Item tabs, in the order the app lists them.
+  SOURCES: [
+    { tab: 'Inventory', kind: 'inventory', anchor: ['Item'] },
+    { tab: 'Consumables', kind: 'consumable', anchor: ['Item'] },
+    { tab: 'Celamerch', kind: 'merch', anchor: ['Merch Design'] }
+  ],
   MEMBERS: 'MEMBERS',
   ACCESS: 'ACCESS',
   PROJECTS: 'PROJECTS',
@@ -61,28 +67,31 @@ var CELA = {
   REQUESTS: 'REQUESTS',
   BORROWED: 'BORROWED_NOW',
   HEADERS: {
-    CATALOG: ['Item', 'Category', 'Quantity', 'Storage Area', 'Specific Location', 'Notes', 'Last Updated'],
-    STORAGE_AREAS: ['Storage Area', 'Description'],
     MEMBERS: ['ID Number', 'Name', 'Department', 'Position', 'Email'],
     ACCESS: ['ID Number', 'Name', 'Level', 'Email'],
     PROJECTS: ['Project/Dept', 'Active', 'Event End Date'],
     CORES: ['ID Number', 'Name', 'Project', 'Role'],
     REQUESTS: [
       'Timestamp', 'Request ID', 'Line ID', 'Client ID', 'ID Number', 'Name',
-      'Case', 'Project', 'Department/Reason', 'Item', 'Qty',
+      'Case', 'Project', 'Department/Reason', 'Item', 'Item Ref', 'Qty',
       'Storage Area', 'Status', 'Due', 'Resolved At', 'Resolved By', 'Last Reminded'
     ]
   },
   DEPARTMENTS: ['COMMPUB', 'CUL', 'EXREL', 'FIN', 'HR', 'OSR'],
+  // Departments, then the Inventory tab's own Event names so they match.
   DEFAULT_PROJECTS: [
-    'COMMPUB', 'CUL', 'EXREL', 'FIN', 'HR', 'OSR',
-    'Recruitment Week & Welcome Week', 'Celadon Merchandise', 'GA', 'MAF',
-    'Lunar Lotus Market', 'TALAB x FAW', 'Jade Business Summit', 'LDP',
-    'Celadon Rose Sale', 'CNY', 'Spring Film Festival', 'Binondo Amazing Race',
+    'COMMPUB', 'CUL', 'EXREL', 'FIN', 'HR', 'OSR', 'General',
+    'Recruitment and Welcome Week', 'Celadon Merchandise', 'General Assembly',
+    'Mid-Autumn Festival', 'Lunar Lotus Market', 'TALAB x Faculty Appreciation Week',
+    'Jade Business Summit', 'Leadership Development Program', 'Celadon Rose Sale',
+    'Chinese New Year', 'Spring Film Festival', 'Binondo Amazing Race',
     'Mandopop Music Festival', 'Celadon Ball'
   ],
   CASES: ['BORROWING', 'CONSUMING', 'RETURNING'],
-  STATUS: { PENDING: 'Pending', RETURNED: 'Returned', CONSUMED: 'Consumed', RETURN: 'Return logged' }
+  STATUS: { PENDING: 'Pending', RETURNED: 'Returned', CONSUMED: 'Consumed', RETURN: 'Return logged' },
+  // Inventory tab Status values.
+  ITEM_STATUS: { IN: 'In Storage', OUT: 'Out', USED_UP: 'Used Up' },
+  HIDDEN_STATUSES: ['returnedtoowner', 'usedup']
 };
 
 // Full department names (as they may appear in the member list) → codes.
@@ -95,15 +104,25 @@ var DEPT_ALIASES = {
   organizationstrategiesandresearch: 'OSR', organizationstrategiesandresearchdepartment: 'OSR'
 };
 
-// Header aliases so a copied/renamed sheet (or the existing members list) still works.
+// Header aliases so a renamed column (or the existing members list) still works.
 var COLS = {
-  item: ['Item', 'Item Name', 'Title', 'Item Type'],
-  category: ['Category', 'Department', 'Dept', 'Section'],
-  qty: ['Quantity', 'Qty', 'Count', 'Stock'],
+  item: ['Item', 'Item Name', 'Title'],
+  type: ['Type'],
+  qty: ['Qty', 'Quantity', 'Count', 'Stock'],
+  unit: ['Unit'],
+  dept: ['Department', 'Dept'],
+  status: ['Status'],
   storage: ['Storage Area', 'Location', 'Storage'],
-  specific: ['Specific Location', 'Specifc Location', 'Exact Location'],
-  notes: ['Notes', 'Remarks', 'Item Description', 'Description'],
-  updated: ['Last Updated', 'Updated'],
+  spot: ['Specific Spot', 'Specific Location', 'Specifc Location'],
+  event: ['Event'],
+  owned: ['Owned/Borrowed'],
+  notes: ['Notes', 'Remarks'],
+  expiry: ['Expiry Date', 'Expiry', 'Expiration Date'],
+  sy: ['School Year', 'SY'],
+  design: ['Merch Design', 'Design'],
+  merchType: ['Merch Type'],
+  size: ['Size'],
+  damaged: ['Damaged Qty', 'Damaged'],
   id: ['ID Number', 'ID No', 'ID No.', 'ID #', 'ID', 'Student ID', 'Student Number', 'Student No', 'Ateneo ID'],
   name: ['Name', 'Full Name', 'Complete Name', 'Member Name'],
   first: ['First Name', 'Given Name'],
@@ -159,11 +178,11 @@ function route_(e, body) {
 
 function onOpen() {
   SpreadsheetApp.getUi().createMenu('Celadon Inventory')
-    .addItem('Set up / repair tabs', 'setupSheets')
+    .addItem('Set up / repair app tabs', 'setupSheets')
     .addItem('Show pending borrows', 'showPendingBorrows')
     .addSeparator()
-    .addItem('Check overdue borrows now', 'flagOverdue')
-    .addItem('Turn on daily overdue reminders (8 AM)', 'installDailyReminder')
+    .addItem('Run daily check now (overdue + expiry)', 'flagOverdue')
+    .addItem('Turn on daily reminders (8 AM)', 'installDailyReminder')
     .addToUi();
 }
 
@@ -190,22 +209,23 @@ function login_(p) {
 }
 
 function inventory_() {
-  var t = table_(CELA.CATALOG, COLS.item);
-  var out = outByItem_();
-  var items = [];
-  t.rows.forEach(function (r) {
-    var title = cell_(t, r, COLS.item);
-    if (!title) return;
-    var specific = cell_(t, r, COLS.specific);
-    var notes = cell_(t, r, COLS.notes);
-    items.push({
-      title: title,
-      category: cell_(t, r, COLS.category) || 'Misc',
-      qty: cell_(t, r, COLS.qty),
-      out: out[outKey_(title, cell_(t, r, COLS.storage))] || 0,
-      location: cell_(t, r, COLS.storage),
-      notes: [specific, notes].filter(String).join(' · ')
-    });
+  var out = outByRef_();
+  var items = catalogEntries_().map(function (e) {
+    return {
+      ref: e.ref,
+      source: e.kind,
+      title: e.title,
+      category: e.category,
+      type: e.type,
+      qty: e.qty,
+      unit: e.unit,
+      status: e.status,
+      event: e.event,
+      expiry: iso_(e.expiry),
+      out: out[e.ref] || 0,
+      location: e.storage || e.spot,
+      notes: [e.storage ? e.spot : '', e.event, e.notes].filter(String).join(' · ')
+    };
   });
   return { ok: true, items: items };
 }
@@ -275,7 +295,8 @@ function submitOrder_(p) {
     var tz = Session.getScriptTimeZone();
     var requestId = 'REQ-' + Utilities.formatDate(now, tz, 'yyMMdd-HHmmss') + '-' + Math.floor(Math.random() * 1000);
     var due = caseType === 'BORROWING' ? dueDate_(project, now) : '';
-    var catalog = table_(CELA.CATALOG, COLS.item);
+    var entries = catalogEntries_();
+    var out = outByRef_();
     var deduct = prop_('DEDUCT_ON_CONSUME') !== 'false';
     var rows = [];
     var warnings = [];
@@ -287,23 +308,31 @@ function submitOrder_(p) {
       var status = caseType === 'BORROWING' ? CELA.STATUS.PENDING
         : caseType === 'CONSUMING' ? CELA.STATUS.CONSUMED : CELA.STATUS.RETURN;
 
-      var match = findCatalogRow_(catalog, title, it.location);
-      if (match === null) warnings.push('Not in CATALOG: ' + title);
+      var entry = findEntry_(entries, it.ref, title, it.location);
+      if (!entry) warnings.push('Not found in the inventory tabs: ' + title);
+      var ref = entry ? entry.ref : String(it.ref || '');
 
       if (caseType === 'RETURNING') {
-        var cleared = resolveBorrows_(requests, project, title, qty, member.name, now);
+        var cleared = resolveBorrows_(requests, project, ref, title, qty, member.name, now);
         if (cleared < qty) warnings.push(title + ': only ' + cleared + ' of ' + qty + ' matched a pending ' + project + ' borrow');
+        out[ref] = Math.max(0, (out[ref] || 0) - cleared);
       }
-      if (match !== null) {
-        annotateQty_(catalog, match, '[' + caseType + '] - ' + qty + ' ' + project + ', ' + member.name + ' (' + Utilities.formatDate(now, tz, 'MMM d') + ')');
-        if (caseType === 'CONSUMING' && deduct) deductQty_(catalog, match, qty, warnings, title);
-        touch_(catalog, match, now);
+      if (entry) {
+        annotateQty_(entry, '[' + caseType + '] - ' + qty + ' ' + project + ', ' + member.name + ' (' + Utilities.formatDate(now, tz, 'MMM d') + ')');
+        if (caseType === 'BORROWING') {
+          out[ref] = (out[ref] || 0) + qty;
+          syncOutStatus_(entry, out[ref]);
+        } else if (caseType === 'CONSUMING' && deduct) {
+          deductQty_(entry, qty, warnings);
+        } else if (caseType === 'RETURNING') {
+          syncOutStatus_(entry, out[ref] || 0);
+        }
       }
 
       rows.push([
         now, requestId, requestId + '-' + (rows.length + 1), clientId, "'" + id, member.name,
-        caseType, project, String(p.committee || ''), title, qty,
-        String(it.location || ''), status, due, '', '', ''
+        caseType, project, String(p.committee || ''), title, ref, qty,
+        entry ? (entry.storage || entry.spot) : String(it.location || ''), status, due, '', '', ''
       ]);
     });
 
@@ -339,11 +368,143 @@ function resolve_(p) {
         throw new Error('Only the borrower or someone from ' + (r[c('Project')] || 'that project') + ' can mark this returned');
       }
       markReturned_(t.sheet, t.headerRow + 2 + i, c, member.name, new Date());
+      var ref = String(r[c('Item Ref')] || '');
+      var entry = findEntry_(catalogEntries_(), ref, String(r[c('Item')]), String(r[c('Storage Area')]));
+      if (entry) syncOutStatus_(entry, outByRef_()[entry.ref] || 0);
       return { ok: true, lineId: lineId };
     }
     throw new Error('Request line not found: ' + lineId);
   } finally {
     lock.releaseLock();
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// Catalog (Inventory, Consumables, Celamerch)
+// ═══════════════════════════════════════════════════════════════════════
+
+// Every listable item row across the item tabs. `ref` identifies a row by
+// its content (not its row number) so sorting/filtering the sheet is safe.
+function catalogEntries_() {
+  var entries = [];
+  var seen = {};
+  CELA.SOURCES.forEach(function (src) {
+    var sheet = sheet_(src.tab, false);
+    if (!sheet) return;
+    var t = tableFromSheet_(sheet, src.anchor);
+    var expiryCol = colFor_(t, COLS.expiry);
+    t.rows.forEach(function (r, i) {
+      var e = src.kind === 'merch' ? merchEntry_(t, r) : itemEntry_(t, r);
+      if (!e) return;
+      if (CELA.HIDDEN_STATUSES.indexOf(key_(e.status)) !== -1) return;
+      e.kind = src.kind;
+      e.t = t;
+      e.i = i;
+      e.expiry = expiryCol != null && r[expiryCol] instanceof Date ? r[expiryCol] : null;
+      var base = src.kind + ':' + [e.title, e.category, e.storage, e.spot].map(key_).join('|');
+      seen[base] = (seen[base] || 0) + 1;
+      e.ref = seen[base] > 1 ? base + '#' + seen[base] : base;
+      entries.push(e);
+    });
+  });
+  return entries;
+}
+
+function itemEntry_(t, r) {
+  var title = cell_(t, r, COLS.item);
+  if (!title) return null;
+  return {
+    title: title,
+    category: cell_(t, r, COLS.dept) || 'General',
+    type: cell_(t, r, COLS.type),
+    qty: cell_(t, r, COLS.qty),
+    unit: cell_(t, r, COLS.unit),
+    status: cell_(t, r, COLS.status),
+    storage: cell_(t, r, COLS.storage),
+    spot: cell_(t, r, COLS.spot),
+    event: cell_(t, r, COLS.event),
+    notes: cell_(t, r, COLS.notes)
+  };
+}
+
+function merchEntry_(t, r) {
+  var design = cell_(t, r, COLS.design);
+  var count = cell_(t, r, COLS.qty);
+  if (!design || count === '') return null;
+  var type = cell_(t, r, COLS.merchType);
+  var size = cell_(t, r, COLS.size);
+  var title = design + (type && design.toLowerCase().indexOf(type.toLowerCase()) === -1 ? ' ' + type : '') +
+    (size && !/^n\/?a$/i.test(size) ? ' (' + size + ')' : '');
+  var sy = cell_(t, r, COLS.sy);
+  var damaged = cell_(t, r, COLS.damaged);
+  return {
+    title: title,
+    category: 'Merch',
+    type: type,
+    qty: count,
+    unit: 'pcs',
+    status: '',
+    storage: '',
+    spot: sy ? 'SY ' + sy : '',
+    event: '',
+    notes: [damaged ? damaged + ' damaged' : '', cell_(t, r, COLS.notes)].filter(String).join(' · ')
+  };
+}
+
+function findEntry_(entries, ref, title, location) {
+  if (ref) {
+    var byRef = entries.filter(function (e) { return e.ref === ref; })[0];
+    if (byRef) return byRef;
+  }
+  var want = key_(title);
+  var loc = key_(location);
+  var matches = entries.filter(function (e) { return key_(e.title) === want; });
+  return matches.filter(function (e) { return loc && (key_(e.storage) === loc || key_(e.spot) === loc); })[0] ||
+    matches[0] || null;
+}
+
+function entryRange_(e, candidates) {
+  var col = colFor_(e.t, candidates);
+  return col == null ? null : e.t.sheet.getRange(e.t.headerRow + 2 + e.i, col + 1);
+}
+
+function annotateQty_(e, line) {
+  var range = entryRange_(e, COLS.qty);
+  if (!range) return;
+  var existing = range.getNote();
+  range.setNote(existing ? existing + '\n' + line : line);
+}
+
+function deductQty_(e, qty, warnings) {
+  var range = entryRange_(e, COLS.qty);
+  if (!range) return;
+  var current = range.getValue();
+  if (typeof current !== 'number' && !/^\d+$/.test(String(current).trim())) return; // "*", "many" etc.
+  var next = Number(current) - qty;
+  if (next < 0) {
+    warnings.push(e.title + ': requested ' + qty + ' but sheet had ' + current);
+    next = 0;
+  }
+  range.setValue(next);
+  if (next === 0) setStatus_(e, CELA.ITEM_STATUS.USED_UP);
+}
+
+function setStatus_(e, value) {
+  var range = entryRange_(e, COLS.status);
+  if (range) range.setValue(value);
+}
+
+// Status follows the app's borrows: "Out" once every unit is out (or the
+// count isn't a number), back to "In Storage" when nothing is out. Statuses
+// set by hand (Missing, Returned to Owner…) are left alone.
+function syncOutStatus_(e, outQty) {
+  var status = key_(e.status);
+  var total = parseInt(e.qty, 10);
+  if (outQty > 0) {
+    var allOut = isNaN(total) || outQty >= total;
+    if (allOut && (status === '' || status === key_(CELA.ITEM_STATUS.IN))) setStatus_(e, CELA.ITEM_STATUS.OUT);
+  } else if (status === key_(CELA.ITEM_STATUS.OUT)) {
+    setStatus_(e, CELA.ITEM_STATUS.IN);
   }
 }
 
@@ -366,20 +527,16 @@ function clientIdSeen_(clientId) {
   return false;
 }
 
-// Same item name can exist in two storage areas, so count per name + area.
-function outKey_(title, area) {
-  return key_(title) + '|' + key_(area);
-}
-
-function outByItem_() {
+// Pending borrowed qty per catalog ref.
+function outByRef_() {
   var out = {};
   if (!sheet_(CELA.REQUESTS, false)) return out;
   var t = requestsTable_();
   t.rows.forEach(function (r) {
     if (cell_(t, r, ['Case']).toUpperCase() !== 'BORROWING') return;
     if (cell_(t, r, ['Status']) !== CELA.STATUS.PENDING) return;
-    var k = outKey_(cell_(t, r, ['Item']), cell_(t, r, ['Storage Area']));
-    out[k] = (out[k] || 0) + (parseInt(cell_(t, r, ['Qty']), 10) || 0);
+    var ref = cell_(t, r, ['Item Ref']);
+    out[ref] = (out[ref] || 0) + (parseInt(cell_(t, r, ['Qty']), 10) || 0);
   });
   return out;
 }
@@ -399,7 +556,7 @@ function dueDate_(project, now) {
 
 // Marks the oldest pending borrows of `project` + item as Returned.
 // A row is cleared only when the returned qty covers it.
-function resolveBorrows_(sheet, project, title, qty, byName, now) {
+function resolveBorrows_(sheet, project, ref, title, qty, byName, now) {
   var t = requestsTable_();
   var c = function (h) { return t.index[key_(h)]; };
   var remaining = qty;
@@ -408,7 +565,8 @@ function resolveBorrows_(sheet, project, title, qty, byName, now) {
     var r = t.rows[i];
     if (String(r[c('Case')]).toUpperCase() !== 'BORROWING') continue;
     if (String(r[c('Status')]) !== CELA.STATUS.PENDING) continue;
-    if (key_(r[c('Item')]) !== key_(title)) continue;
+    var sameItem = ref ? String(r[c('Item Ref')]) === ref : key_(r[c('Item')]) === key_(title);
+    if (!sameItem) continue;
     if (key_(r[c('Project')]) !== key_(project)) continue;
     var borrowed = parseInt(r[c('Qty')], 10) || 0;
     if (borrowed > remaining) continue;
@@ -424,45 +582,6 @@ function markReturned_(sheet, rowNum, c, byName, now) {
   sheet.getRange(rowNum, c('Resolved At') + 1).setValue(now);
   sheet.getRange(rowNum, c('Resolved By') + 1).setValue(byName);
   sheet.getRange(rowNum, 1, 1, sheet.getLastColumn()).setBackground(null);
-}
-
-function findCatalogRow_(t, title, location) {
-  var want = key_(title);
-  var loc = key_(location);
-  var fallback = null;
-  for (var i = 0; i < t.rows.length; i++) {
-    if (key_(cell_(t, t.rows[i], COLS.item)) !== want) continue;
-    if (!loc || key_(cell_(t, t.rows[i], COLS.storage)) === loc) return i;
-    if (fallback === null) fallback = i;
-  }
-  return fallback;
-}
-
-function annotateQty_(t, i, line) {
-  var col = colFor_(t, COLS.qty);
-  if (col == null) return;
-  var range = t.sheet.getRange(t.headerRow + 2 + i, col + 1);
-  var existing = range.getNote();
-  range.setNote(existing ? existing + '\n' + line : line);
-}
-
-function deductQty_(t, i, qty, warnings, title) {
-  var col = colFor_(t, COLS.qty);
-  if (col == null) return;
-  var range = t.sheet.getRange(t.headerRow + 2 + i, col + 1);
-  var current = range.getValue();
-  if (typeof current !== 'number' && !/^\d+$/.test(String(current).trim())) return; // "many", "a lot" etc.
-  var next = Number(current) - qty;
-  if (next < 0) {
-    warnings.push(title + ': requested ' + qty + ' but sheet had ' + current);
-    next = 0;
-  }
-  range.setValue(next);
-}
-
-function touch_(t, i, now) {
-  var col = colFor_(t, COLS.updated);
-  if (col != null) t.sheet.getRange(t.headerRow + 2 + i, col + 1).setValue(now);
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -565,7 +684,7 @@ function projectTable_() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════
-// Overdue reminders (daily trigger)
+// Daily check: overdue borrows + expiring consumables
 // ═══════════════════════════════════════════════════════════════════════
 
 function installDailyReminder() {
@@ -573,11 +692,12 @@ function installDailyReminder() {
     if (tr.getHandlerFunction() === 'flagOverdue') ScriptApp.deleteTrigger(tr);
   });
   ScriptApp.newTrigger('flagOverdue').timeBased().everyDays(1).atHour(8).create();
-  notify_('Daily overdue check is on (around 8 AM). Set NOTIFY_EMAILS in Script Properties to choose who gets the digest.');
+  notify_('Daily check is on (around 8 AM). Set NOTIFY_EMAILS in Script Properties to choose who gets the digest.');
 }
 
-// Highlights overdue borrows in REQUESTS and emails a digest. Each line is
-// re-reminded at most every REMIND_EVERY_DAYS days.
+// Highlights overdue borrows in REQUESTS and emails a digest that also lists
+// expired/expiring Consumables. Each overdue line is re-reminded at most
+// every REMIND_EVERY_DAYS days; expiring items are listed every day.
 function flagOverdue() {
   var t = requestsTable_();
   var c = function (h) { return t.index[key_(h)]; };
@@ -605,12 +725,26 @@ function flagOverdue() {
     if (!(last instanceof Date) || (now - last) >= every * 86400000 - 3600000) toRemind.push(line);
   });
 
+  var expiring = expiringItems_(now);
+  if (toRemind.length || expiring.length) sendDigest_(toRemind, expiring);
   if (toRemind.length) {
-    sendDigest_(toRemind);
     if (prop_('EMAIL_BORROWERS') === 'true') emailBorrowers_(toRemind);
     toRemind.forEach(function (l) { t.sheet.getRange(l.rowNum, c('Last Reminded') + 1).setValue(now); });
   }
-  return { overdue: overdue.length, reminded: toRemind.length };
+  return { overdue: overdue.length, reminded: toRemind.length, expiring: expiring.length };
+}
+
+function expiringItems_(now) {
+  var warnDays = parseInt(prop_('EXPIRY_WARN_DAYS'), 10) || 14;
+  var limit = new Date(startOfDay_(now).getTime() + (warnDays + 1) * 86400000);
+  return catalogEntries_().filter(function (e) { return e.expiry && e.expiry < limit; })
+    .sort(function (a, b) { return a.expiry - b.expiry; })
+    .map(function (e) {
+      var days = Math.round((startOfDay_(e.expiry) - startOfDay_(now)) / 86400000);
+      return '• ' + e.title + (e.qty ? ' (' + e.qty + (e.unit ? ' ' + e.unit : '') + ')' : '') + ' — ' + e.category + ' — ' +
+        (days < 0 ? 'expired ' + (-days) + ' day' + (days === -1 ? '' : 's') + ' ago'
+          : days === 0 ? 'expires today' : 'expires in ' + days + ' day' + (days === 1 ? '' : 's'));
+    });
 }
 
 function overdueLine_(l) {
@@ -618,15 +752,22 @@ function overdueLine_(l) {
     l.days + ' day' + (l.days === 1 ? '' : 's') + ' overdue';
 }
 
-function sendDigest_(lines) {
+function sendDigest_(overdueLines, expiringLines) {
   var to = prop_('NOTIFY_EMAILS') || accessEmails_().join(',');
   if (!to) return;
-  MailApp.sendEmail({
-    to: to,
-    subject: '[Celadon Inventory] ' + lines.length + ' overdue borrow' + (lines.length === 1 ? '' : 's'),
-    body: 'Still out of the org room past their return date:\n\n' + lines.map(overdueLine_).join('\n') +
-      '\n\nOpen the BORROWED_NOW tab for the full list. Mark items returned in the app once they are back.'
-  });
+  var parts = [];
+  if (overdueLines.length) {
+    parts.push('Still out of the org room past their return date:\n\n' + overdueLines.map(overdueLine_).join('\n') +
+      '\n\nOpen the BORROWED_NOW tab for the full list. Mark items returned in the app once they are back.');
+  }
+  if (expiringLines.length) {
+    parts.push('Consumables expired or expiring soon:\n\n' + expiringLines.join('\n'));
+  }
+  var subject = [
+    overdueLines.length ? overdueLines.length + ' overdue borrow' + (overdueLines.length === 1 ? '' : 's') : '',
+    expiringLines.length ? expiringLines.length + ' expiring item' + (expiringLines.length === 1 ? '' : 's') : ''
+  ].filter(String).join(', ');
+  MailApp.sendEmail({ to: to, subject: '[Celadon Inventory] ' + subject, body: parts.join('\n\n———\n\n') });
 }
 
 // One email per person: the borrower plus every core of the project.
@@ -673,8 +814,12 @@ function accessEmails_() {
 // ═══════════════════════════════════════════════════════════════════════
 
 function setupSheets() {
-  var tabs = [CELA.CATALOG, CELA.STORAGE, CELA.ACCESS, CELA.PROJECTS, CELA.CORES, CELA.REQUESTS];
-  if (!prop_('MEMBERS_SPREADSHEET_ID')) tabs.push(CELA.MEMBERS);
+  var missing = CELA.SOURCES.filter(function (src) { return !sheet_(src.tab, false); })
+    .map(function (src) { return src.tab; });
+  if (missing.indexOf('Inventory') !== -1) throw new Error('This spreadsheet has no Inventory tab. Open the script from the Celadon Inventory Tracker sheet.');
+
+  var tabs = [CELA.ACCESS, CELA.PROJECTS, CELA.CORES, CELA.REQUESTS];
+  if (!prop_('MEMBERS_SPREADSHEET_ID')) tabs.unshift(CELA.MEMBERS);
   tabs.forEach(ensureSheet_);
 
   var projects = sheet_(CELA.PROJECTS);
@@ -685,10 +830,6 @@ function setupSheets() {
   }
   projects.getRange('C2:C').setNumberFormat('mmm d, yyyy');
 
-  seedStorageAreas_();
-  validateColumn_(CELA.CATALOG, COLS.storage, SpreadsheetApp.newDataValidation()
-    .requireValueInRange(sheet_(CELA.STORAGE).getRange('A2:A'), true).setAllowInvalid(false)
-    .setHelpText('Pick a storage area. Add new ones in the STORAGE_AREAS tab.').build());
   validateColumn_(CELA.CORES, COLS.project, SpreadsheetApp.newDataValidation()
     .requireValueInRange(projects.getRange('A2:A'), true).build());
   validateColumn_(CELA.ACCESS, COLS.level, SpreadsheetApp.newDataValidation()
@@ -703,7 +844,8 @@ function setupSheets() {
     });
 
   setupBorrowedNow_();
-  notify_('Celadon Inventory tabs are ready. Fill in CATALOG, STORAGE_AREAS, CORES and the member list next.');
+  notify_('App tabs are ready (' + tabs.concat(CELA.BORROWED).join(', ') + '). ' +
+    'Inventory, Celamerch and Consumables were not changed. Next: add members, officers (ACCESS) and project cores (CORES).');
 }
 
 function ensureSheet_(name) {
@@ -716,7 +858,7 @@ function ensureSheet_(name) {
     styleHeader_(sheet, headers.length);
     return sheet;
   }
-  // Existing tab (e.g. copied from MEA's sheet): append any missing columns.
+  // Existing tab: append any missing columns.
   var current = sheet.getRange(1, 1, 1, Math.max(sheet.getLastColumn(), 1)).getValues()[0].map(key_);
   var missing = headers.filter(function (h) { return current.indexOf(key_(h)) === -1; });
   if (missing.length && current.some(String)) {
@@ -737,21 +879,6 @@ function validateColumn_(tab, candidates, rule) {
   var col = colFor_(t, candidates);
   if (col == null) return;
   t.sheet.getRange(t.headerRow + 2, col + 1, Math.max(t.sheet.getMaxRows() - t.headerRow - 1, 1), 1).setDataValidation(rule);
-}
-
-// First run only: fill STORAGE_AREAS from whatever CATALOG already uses.
-function seedStorageAreas_() {
-  var storage = sheet_(CELA.STORAGE);
-  if (storage.getLastRow() > 1) return;
-  var t = table_(CELA.CATALOG, COLS.item);
-  var seen = {};
-  t.rows.forEach(function (r) {
-    var area = cell_(t, r, COLS.storage);
-    if (area && !seen[key_(area)]) seen[key_(area)] = area;
-  });
-  var areas = Object.keys(seen).map(function (k) { return [seen[k], '']; })
-    .sort(function (a, b) { return a[0].localeCompare(b[0]); });
-  if (areas.length) storage.getRange(2, 1, areas.length, 2).setValues(areas);
 }
 
 // BORROWED_NOW: a read-only QUERY over REQUESTS, overdue rows in red.

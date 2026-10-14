@@ -11,13 +11,13 @@
   // no URL is set yet or the request fails, so the app never breaks.
   if (!window.google || !window.google.script || !window.google.script.run) {
     const demoInventory = [
-      { id: 'ITM-100', title: 'CLDN Letters', category: 'Misc', location: 'Outside Org Room', qtyAvailable: 1, qtyDisplay: '1' },
-      { id: 'ITM-101', title: 'Scissors', category: 'COMMPUB', location: 'Metal Drawer (Top)', qtyAvailable: 1, qtyDisplay: '1' },
-      { id: 'ITM-102', title: 'Stapler', category: 'COMMPUB', location: 'Metal Drawer (Top)', qtyAvailable: 3, qtyDisplay: '3' },
-      { id: 'ITM-103', title: 'Binder Clips', category: 'COMMPUB', location: 'Metal Drawer (Top)', qtyAvailable: null, qtyDisplay: 'many' },
-      { id: 'ITM-104', title: 'Plastic Bowls', category: 'MAF', location: 'Org Room', qtyAvailable: 17, qtyDisplay: '17' },
-      { id: 'ITM-105', title: 'Red Table Cloth', category: 'MAF', location: 'Org Room', qtyAvailable: 6, qtyDisplay: '6' },
-      { id: 'ITM-106', title: 'Koi Lanyard (25-26)', category: 'Merch', location: 'Org Room', qtyAvailable: 52, qtyDisplay: '52' }
+      { id: 'ITM-100', title: 'CLDN Letters', category: 'General', location: 'Outside Org Room', qtyAvailable: 1, qtyDisplay: '1 pcs' },
+      { id: 'ITM-101', title: 'Scissors', category: 'COMMPUB', location: 'Metal Drawer (Top)', qtyAvailable: 1, qtyDisplay: '1 pcs' },
+      { id: 'ITM-102', title: 'Tripods', category: 'COMMPUB', location: 'Metal Drawer (2nd from Top)', qtyAvailable: 5, qtyDisplay: '5 pcs' },
+      { id: 'ITM-103', title: 'Binder Clips', category: 'COMMPUB', location: 'Metal Drawer (Top)', qtyAvailable: null, qtyDisplay: 'Lots' },
+      { id: 'ITM-104', title: 'Metal Bowls', category: 'CUL', location: 'CUL MAF Box', qtyAvailable: 15, qtyDisplay: '15 pcs' },
+      { id: 'ITM-105', title: 'Mahjong', category: 'HR', location: 'Rack (Bottom Shelf)', qtyAvailable: 3, qtyDisplay: '3 sets' },
+      { id: 'ITM-106', title: 'Koi Lanyard', category: 'Merch', location: 'SY 25-26', qtyAvailable: 52, qtyDisplay: '52 pcs' }
     ];
 
     function getCelaInventoryScriptUrl() {
@@ -87,15 +87,23 @@
         console.log('[Cela Inventory] Loaded', json.items.length, 'items from the sheet.');
         window.__celaInventoryDebugError = null;
         const mapped = json.items.map((item, i) => {
-          const rawQty = String(item.qty || '').trim();
+          const rawQty = String(item.qty == null ? '' : item.qty).trim();
           const numericQty = parseInt(rawQty, 10);
+          const unit = String(item.unit || '').trim();
           return {
-            id: 'INV-' + i,
+            // ref identifies the sheet row (tab + item + department + spot) so
+            // same-name items in different departments stay separate.
+            id: item.ref || ('INV-' + i),
             title: item.title || 'Untitled',
-            category: item.category || 'Miscellaneous',
+            category: item.category || 'General',
+            type: item.type || '',
+            event: item.event || '',
+            status: item.status || '',
+            expiry: item.expiry || '',
             location: item.location || '',
             notes: item.notes || '',
-            qtyDisplay: rawQty || '—',
+            // "*" in the sheet means plenty, no exact count
+            qtyDisplay: rawQty === '*' ? 'Lots' : (rawQty ? rawQty + (unit && !isNaN(numericQty) ? ' ' + unit : '') : '—'),
             out: Number(item.out) || 0, // currently borrowed (pending in REQUESTS)
             qtyAvailable: !isNaN(numericQty) ? numericQty : null // null = uncapped (e.g. "*", "2 packs")
           };
@@ -272,11 +280,12 @@
     // (action=projects) so officers can add a project without a code change.
     const PROJECT_OPTIONS = [
       // Departments
-      'COMMPUB', 'CUL', 'EXREL', 'FIN', 'HR', 'OSR',
-      // Projects
-      'Recruitment Week & Welcome Week', 'Celadon Merchandise', 'GA', 'MAF',
-      'Lunar Lotus Market', 'TALAB x FAW', 'Jade Business Summit', 'LDP',
-      'Celadon Rose Sale', 'CNY', 'Spring Film Festival', 'Binondo Amazing Race',
+      'COMMPUB', 'CUL', 'EXREL', 'FIN', 'HR', 'OSR', 'General',
+      // Projects (same names as the Inventory tab's Event column)
+      'Recruitment and Welcome Week', 'Celadon Merchandise', 'General Assembly',
+      'Mid-Autumn Festival', 'Lunar Lotus Market', 'TALAB x Faculty Appreciation Week',
+      'Jade Business Summit', 'Leadership Development Program', 'Celadon Rose Sale',
+      'Chinese New Year', 'Spring Film Festival', 'Binondo Amazing Race',
       'Mandopop Music Festival', 'Celadon Ball'
     ];
 
@@ -1162,7 +1171,7 @@
 
     if (q) {
       items = items.filter(item => {
-        const haystack = [item.title, item.category, item.location, item.notes]
+        const haystack = [item.title, item.category, item.type, item.event, item.location, item.notes]
           .filter(Boolean).join(' ').toLowerCase();
         return haystack.includes(q);
       });
@@ -1220,7 +1229,8 @@
         <div class="item-card" onclick="addToCart('${escapeAttr(item.id)}')">
           <div class="item-thumb">${locationTag(item.location)}</div>
           <div class="item-title">${escapeHtml(item.title)}</div>
-          <div class="item-qty">${escapeHtml(item.qtyDisplay != null ? item.qtyDisplay : item.qtyAvailable)}${item.out ? ` <span class="out-badge">${item.out} out</span>` : ''}</div>
+          <div class="item-cat">${escapeHtml(item.category)}</div>
+          <div class="item-qty">${escapeHtml(item.qtyDisplay != null ? item.qtyDisplay : item.qtyAvailable)}${itemBadges(item)}</div>
         </div>
       `).join('');
     } else {
@@ -1229,8 +1239,8 @@
         <div class="item-row" onclick="addToCart('${escapeAttr(item.id)}')">
           <div class="item-thumb">${locationTag(item.location)}</div>
           <div class="item-info">
-            <div class="item-title">${escapeHtml(item.title)}${item.out ? ` <span class="out-badge">${item.out} out</span>` : ''}</div>
-            <div class="item-qty">${escapeHtml(item.qtyDisplay || '—')} in sheet${item.notes ? ' · ' + escapeHtml(item.notes) : ''}</div>
+            <div class="item-title">${escapeHtml(item.title)}${itemBadges(item)}</div>
+            <div class="item-qty">${escapeHtml(item.category)} · ${escapeHtml(item.qtyDisplay || '—')}${item.notes ? ' · ' + escapeHtml(item.notes) : ''}</div>
           </div>
           ${cartQty(item.id) > 0 ? `<div class="in-cart-badge">${cartQty(item.id)} in cart</div>` : ''}
         </div>
@@ -1247,6 +1257,20 @@
     if (clearBtn) clearBtn.style.display = 'none';
     renderCategoryChips();
     renderCatalog();
+  }
+
+  // Small status chips on catalog cards: borrowed count, hand-set Status
+  // (Out/Missing), and Consumables expiry.
+  function itemBadges(item) {
+    const badges = [];
+    if (item.out) badges.push(`<span class="out-badge">${item.out} out</span>`);
+    if (/^(out|missing)$/i.test(item.status) && !item.out) badges.push(`<span class="out-badge status">${escapeHtml(item.status)}</span>`);
+    if (item.expiry) {
+      const days = Math.round((new Date(item.expiry) - new Date()) / 86400000);
+      const label = days < 0 ? 'Expired' : (days <= 14 ? 'Exp. ' + shortDate(item.expiry) : '');
+      if (label) badges.push(`<span class="out-badge expiry">${label}</span>`);
+    }
+    return badges.length ? ' ' + badges.join(' ') : '';
   }
 
   function cartQty(itemId) {
@@ -1399,6 +1423,7 @@
       committee: committee,
       items: entries.map(({ item, qty }) => ({
         id: item.id,
+        ref: item.id, // the backend matches the exact sheet row by this
         title: item.title,
         qty: qty,
         location: item.location || '',
