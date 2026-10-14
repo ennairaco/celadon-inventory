@@ -536,7 +536,7 @@
 
   // Views that use the Celadon identity header + the Home/Settings/Help
   // bottom nav instead of the standard app header + Catalog/Cart/Checkout nav.
-  const MAIN_VIEWS = ['home', 'settings', 'help', 'history', 'out'];
+  const MAIN_VIEWS = ['home', 'settings', 'help', 'history', 'out', 'add'];
 
   function showView(view) {
     state.view = view;
@@ -575,6 +575,7 @@
     }
     if (view === 'history') setHistoryTab('personal');
     if (view === 'out') renderOut();
+    if (view === 'add') renderAddForm();
     if (view === 'home') refreshHomeData();
     if (view === 'cart') renderCart();
     if (view === 'checkout') renderCheckout();
@@ -682,7 +683,10 @@
   function historyRowHtml(rec, showName) {
     const when = shortDate(rec.time);
     const pendingBorrow = rec.caseType === 'BORROWING' && !rec.resolved;
-    const caseLabel = rec.caseType === 'CONSUMING' ? 'Used up' : (rec.resolved ? 'Returned' : (rec.overdue ? 'Overdue' : 'Borrowed'));
+    const caseLabel = rec.caseType === 'CONSUMING' ? 'Used up'
+      : rec.caseType === 'ADDING' ? 'Added'
+      : rec.caseType === 'RESTOCKING' ? 'Stock added'
+      : (rec.resolved ? 'Returned' : (rec.overdue ? 'Overdue' : 'Borrowed'));
     const caseClass = rec.resolved ? 'resolved' : (rec.overdue ? 'overdue' : 'pending');
     const dueNote = pendingBorrow && rec.due ? `<div class="history-item-date${rec.overdue ? ' overdue' : ''}">Due ${shortDate(rec.due)}</div>` : `<div class="history-item-date">${when}</div>`;
     const resolveBtn = pendingBorrow && canResolve(rec)
@@ -717,7 +721,7 @@
     state.actingAs = value || '';
     try { localStorage.setItem(ACTING_AS_KEY, state.actingAs); } catch(e) {}
     renderActForSelects();
-    if (changed) { dashState.selected.clear(); dashState.confirming = false; renderProjectDash(); }
+    if (changed) { dashState.selected.clear(); dashState.confirming = false; dashState.openGroups = null; renderProjectDash(); }
   }
 
   function sameName(a, b) {
@@ -739,7 +743,9 @@
   function renderActForSelects() {
     const targets = allowedTargets();
     const before = state.actingAs;
-    if (!targets.some(t => t === state.actingAs)) {
+    // Only fall back once the project list has loaded; before that the saved
+    // choice can't be checked and must not be thrown away.
+    if (targets.length && !targets.some(t => t === state.actingAs)) {
       const ownDept = state.lastId && state.lastId.committee;
       state.actingAs = targets.find(t => sameName(t, ownDept)) || targets[0] || '';
     }
@@ -808,6 +814,133 @@
   }
   window.resolveLine = resolveLine;
 
+  /* ---------------- Add to inventory ----------------
+     Creates a new row in the Inventory tab (or Consumables when it has an
+     expiry date). Dropdowns mirror the sheet's own dropdown lists
+     (action=options), with these as a fallback until they load. */
+  const ADD_OPTIONS_KEY = 'cela_add_options';
+  const ADD_OPTIONS_FALLBACK = {
+    types: ['Art & Craft Supplies', 'Bags & Storage', 'Cloth & Textiles', 'Decor & Props', 'Electronics & Lighting', 'Food', 'Games',
+      'Kitchen & Food Prep', 'Office Supplies', 'Signage & Displays', 'Tableware & Disposables', 'Toiletries & Hygiene'],
+    departments: ['General', 'OP', 'COMMPUB', 'CUL', 'EXREL', 'FIN', 'HR', 'OSR'],
+    categories: ['Supplies', 'Equipment', 'Event Prop', 'Sponsor Goods'],
+    storageAreas: ['Outside Org Room', 'Brown Table (Top)', 'Metal Drawer (Top)', 'Metal Drawer (2nd from Top)', 'Brown Cabinet',
+      'Brown Cabinet (Bottom)', 'Cabinet (Bottom Shelf)', 'Rack (Top Shelf)', 'Rack (Bottom Shelf)', 'Shelf', 'Org Room Corner'],
+    events: ['Recruitment Week and Welcome Week', 'Celadon Merchandise', 'General Assembly', 'Mid-Autumn Festival', 'Lunar Lotus Market',
+      'TALAB x Faculty Appreciation Week', 'Jade Business Summit', 'Leadership Development Program', 'Celadon Rose Sale',
+      'Chinese New Year', 'Spring Film Festival', 'Binondo Amazing Race', 'Mandopop Music Festival', 'Celadon Ball']
+  };
+
+  function getAddOptions() {
+    try {
+      const cached = JSON.parse(localStorage.getItem(ADD_OPTIONS_KEY) || 'null');
+      if (cached) return Object.assign({}, ADD_OPTIONS_FALLBACK, cached);
+    } catch(e) {}
+    return ADD_OPTIONS_FALLBACK;
+  }
+
+  async function refreshAddOptions() {
+    const url = getInventoryScriptUrl();
+    if (!url || !navigator.onLine) return;
+    try {
+      const json = await fetch(url + '?action=options').then(r => r.json());
+      if (!json || !json.ok || !json.options) return;
+      const live = {};
+      Object.keys(json.options).forEach(k => { if (Array.isArray(json.options[k]) && json.options[k].length) live[k] = json.options[k]; });
+      localStorage.setItem(ADD_OPTIONS_KEY, JSON.stringify(live));
+      if (state.view === 'add') fillAddSelects(true);
+    } catch(e) {}
+  }
+
+  function fillSelect(id, values, placeholder, keep) {
+    const el = document.getElementById(id);
+    if (!el) return;
+    const current = keep ? el.value : '';
+    el.innerHTML = `<option value="">${escapeHtml(placeholder)}</option>` +
+      values.map(v => `<option value="${escapeHtml(v)}">${escapeHtml(v)}</option>`).join('');
+    if (current && values.includes(current)) el.value = current;
+  }
+
+  function fillAddSelects(keep) {
+    const o = getAddOptions();
+    fillSelect('add-dept', o.departments, 'Choose a department', keep);
+    fillSelect('add-type', o.types, 'Choose a type', keep);
+    fillSelect('add-category', o.categories, 'Choose a category', keep);
+    fillSelect('add-storage', o.storageAreas, 'Not sure yet', keep);
+    fillSelect('add-event', o.events, 'None', keep);
+  }
+
+  function renderAddForm() {
+    const deptSelect = document.getElementById('add-dept');
+    const keep = deptSelect && deptSelect.options.length > 1;
+    fillAddSelects(keep);
+    if (!keep) {
+      // Default the department to what you're borrowing for (if it's a
+      // department), else your own.
+      const o = getAddOptions();
+      const pick = [state.actingAs, state.lastId && state.lastId.committee].find(v => v && o.departments.some(d => sameName(d, v)));
+      if (pick) deptSelect.value = o.departments.find(d => sameName(d, pick));
+    }
+    document.getElementById('add-error').textContent = '';
+    refreshAddOptions();
+  }
+
+  function bindAddForm() {
+    const form = document.getElementById('add-form');
+    if (!form) return;
+    document.getElementById('add-expires').addEventListener('change', e => {
+      document.getElementById('add-expiry-wrap').style.display = e.target.checked ? '' : 'none';
+    });
+    form.addEventListener('submit', e => { e.preventDefault(); submitAddItem(); });
+  }
+
+  async function submitAddItem() {
+    const val = id => document.getElementById(id).value.trim();
+    const err = document.getElementById('add-error');
+    const btn = document.getElementById('add-submit');
+    err.textContent = '';
+    const expires = document.getElementById('add-expires').checked;
+    const payload = {
+      idNumber: state.lastId && state.lastId.idNumber,
+      title: val('add-title'), qty: val('add-qty'), unit: val('add-unit'),
+      department: val('add-dept'), type: val('add-type'), category: val('add-category'),
+      storage: val('add-storage'), spot: val('add-spot'), event: val('add-event'),
+      notes: val('add-notes'), expiry: expires ? val('add-expiry') : ''
+    };
+    if (!payload.title) { err.textContent = 'Enter the item name.'; return; }
+    if (!payload.department) { err.textContent = 'Choose the department that owns it.'; return; }
+    if (payload.qty && !/^(\d+|\*)$/.test(payload.qty)) { err.textContent = 'Quantity must be a whole number, or * for "a lot".'; return; }
+    if (expires && !payload.expiry) { err.textContent = 'Pick the expiry date, or untick "It has an expiry date".'; return; }
+    if (!payload.storage && !payload.spot) { err.textContent = 'Add a storage area or a specific spot so people can find it.'; return; }
+    const url = getInventoryScriptUrl();
+    if (!url || !navigator.onLine) { err.textContent = 'You need to be online to add items.'; return; }
+
+    btn.disabled = true; btn.textContent = 'ADDING…';
+    try {
+      const token = getInventoryToken();
+      const res = await fetch(url + '?action=addItem', {
+        method: 'POST',
+        headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+        body: JSON.stringify(Object.assign(payload, token ? { token } : {}))
+      });
+      const json = await res.json();
+      if (!json || !json.ok) throw new Error((json && json.error) || 'Could not add the item');
+      showToast(json.revived ? payload.title + ' is back in the inventory' : payload.title + ' added' + (json.tab === 'Consumables' ? ' to Consumables' : ''));
+      document.getElementById('add-form').reset();
+      document.getElementById('add-expiry-wrap').style.display = 'none';
+      // Show the new item in the catalog.
+      state.catalogSearch = payload.title;
+      state.catalogCategory = 'all';
+      const search = document.getElementById('catalog-search');
+      if (search) search.value = payload.title;
+      showView('catalog');
+    } catch(e2) {
+      err.textContent = e2.message;
+    } finally {
+      btn.disabled = false; btn.textContent = 'ADD TO INVENTORY';
+    }
+  }
+
   /* ---------------- Borrowed now ----------------
      Everything still out of the org room, grouped by project/department,
      overdue first. Same data as History (action=history), so it also works
@@ -841,7 +974,8 @@
     const code = Object.keys(AYI_BY_DEPT).find(d => sameName(d, name));
     return 'brand/ayi/' + (code ? AYI_BY_DEPT[code] : 'ayi') + '.png';
   }
-  const dashState = { selected: new Set(), confirming: false, busy: false, records: [], offline: false };
+  const dashState = { selected: new Set(), confirming: false, busy: false, records: [], offline: false, openGroups: null };
+  const DASH_OPEN_ALL_UP_TO = 5; // with this many items or fewer, every group starts expanded
 
   let homeLoadToken = 0;
   async function refreshHomeData() {
@@ -885,15 +1019,49 @@
     ].map(([label, n, tone]) => `<div class="dash-stat ${tone}"><div class="dash-stat-n">${n}</div><div class="dash-stat-l">${label}</div></div>`).join('');
 
     const offlineNote = dashState.offline ? '<div class="history-offline-note">Offline: showing the last synced data. Returns need a connection.</div>' : '';
-    const outRows = out.map(r => `
-      <label class="dash-row${r.overdue ? ' is-overdue' : ''}">
-        <input type="checkbox" class="dash-check" data-line="${escapeHtml(r.lineId)}" ${dashState.selected.has(r.lineId) ? 'checked' : ''} ${dashState.offline || dashState.busy ? 'disabled' : ''}>
-        <span class="dash-row-main">
-          <span class="dash-row-title">${escapeHtml(r.item)}${r.qty ? ' × ' + escapeHtml(r.qty) : ''}</span>
-          <span class="dash-row-meta">${escapeHtml(r.name || '—')} · ${shortDate(r.time)}${r.committee ? ' · ' + escapeHtml(r.committee) : ''}</span>
-        </span>
-        <span class="dash-row-due${r.overdue ? ' overdue' : ''}">${r.overdue ? 'Overdue' : (r.due ? 'Due ' + shortDate(r.due) : '')}</span>
-      </label>`).join('');
+    // Group what's out by borrower so long lists collapse into one line per
+    // person; each group (and the whole list) has a select-all checkbox.
+    const disabled = dashState.offline || dashState.busy ? 'disabled' : '';
+    const groupsByKey = {};
+    out.forEach(r => {
+      const key = String(r.idNum || r.name || '?');
+      (groupsByKey[key] = groupsByKey[key] || { key, name: r.name || r.idNum || 'Unknown', rows: [] }).rows.push(r);
+    });
+    const groups = Object.values(groupsByKey).sort((a, b) =>
+      (b.rows.filter(r => r.overdue).length - a.rows.filter(r => r.overdue).length) || a.name.localeCompare(b.name));
+    if (!dashState.openGroups) {
+      // First render for this project: open everything when the list is short,
+      // otherwise only groups with something overdue.
+      dashState.openGroups = new Set(groups.filter(g => out.length <= DASH_OPEN_ALL_UP_TO || g.rows.some(r => r.overdue)).map(g => g.key));
+    }
+    const rowHtml = r => `
+          <label class="dash-row${r.overdue ? ' is-overdue' : ''}">
+            <input type="checkbox" class="dash-check" data-line="${escapeHtml(r.lineId)}" ${dashState.selected.has(r.lineId) ? 'checked' : ''} ${disabled}>
+            <span class="dash-row-main">
+              <span class="dash-row-title">${escapeHtml(r.item)}${r.qty ? ' × ' + escapeHtml(r.qty) : ''}</span>
+              <span class="dash-row-meta">${shortDate(r.time)}${r.committee ? ' · ' + escapeHtml(r.committee) : ''}${r.location ? ' · ' + escapeHtml(r.location) : ''}</span>
+            </span>
+            <span class="dash-row-due${r.overdue ? ' overdue' : ''}">${r.overdue ? 'Overdue' : (r.due ? 'Due ' + shortDate(r.due) : '')}</span>
+          </label>`;
+    const groupHtml = g => {
+      const overdueN = g.rows.filter(r => r.overdue).length;
+      const units = g.rows.reduce((sum, r) => sum + (parseInt(r.qty, 10) || 0), 0);
+      return `
+        <details class="dash-group${overdueN ? ' has-overdue' : ''}" data-group="${escapeHtml(g.key)}" ${dashState.openGroups.has(g.key) ? 'open' : ''}>
+          <summary class="dash-group-head">
+            <input type="checkbox" class="dash-group-check" data-group="${escapeHtml(g.key)}" aria-label="Select everything ${escapeHtml(g.name)} borrowed" ${disabled}>
+            <span class="dash-group-name">${escapeHtml(g.name)}</span>
+            <span class="dash-group-meta">${g.rows.length} item${g.rows.length === 1 ? '' : 's'}${units > g.rows.length ? ' (' + units + ' pcs)' : ''}${overdueN ? ` · <b>${overdueN} overdue</b>` : ''}</span>
+            <span class="dash-group-chev" aria-hidden="true">›</span>
+          </summary>
+          <div class="dash-group-body">${g.rows.map(rowHtml).join('')}</div>
+        </details>`;
+    };
+    const outRows = (out.length > 1 ? `
+      <div class="dash-toolbar">
+        <label class="dash-all"><input type="checkbox" id="dash-check-all" ${disabled}> Select all (${out.length})</label>
+        <button type="button" class="text-link" id="dash-toggle-groups">${dashState.openGroups.size === groups.length ? 'Collapse all' : 'Expand all'}</button>
+      </div>` : '') + groups.map(groupHtml).join('');
     const doneRows = returned.map(r => `
       <div class="dash-row done">
         <span class="dash-done-mark" aria-hidden="true">✓</span>
@@ -907,14 +1075,54 @@
       (out.length ? outRows : `<div class="dash-empty"><img src="${ayiFor(project)}" alt=""><div>All clear! ${escapeHtml(project)} has nothing out right now.</div></div>`) +
       (returned.length ? `<details class="dash-done"><summary>Recently returned (${returned.length})</summary>${doneRows}</details>` : '');
 
+    // Keeps the group / select-all boxes in step with the item boxes.
+    const syncChecks = () => {
+      groups.forEach(g => {
+        const box = document.querySelector(`#proj-dash-list .dash-group-check[data-group="${CSS.escape(g.key)}"]`);
+        if (!box) return;
+        const n = g.rows.filter(r => dashState.selected.has(r.lineId)).length;
+        box.checked = n === g.rows.length;
+        box.indeterminate = n > 0 && n < g.rows.length;
+      });
+      const all = document.getElementById('dash-check-all');
+      if (all) {
+        all.checked = dashState.selected.size === out.length;
+        all.indeterminate = dashState.selected.size > 0 && dashState.selected.size < out.length;
+      }
+      dashState.confirming = false;
+      renderDashActions(out);
+    };
+    const setLines = (rows, on) => {
+      rows.forEach(r => on ? dashState.selected.add(r.lineId) : dashState.selected.delete(r.lineId));
+      document.querySelectorAll('#proj-dash-list .dash-check').forEach(cb => { cb.checked = dashState.selected.has(cb.dataset.line); });
+      syncChecks();
+    };
     document.querySelectorAll('#proj-dash-list .dash-check').forEach(cb => {
       cb.addEventListener('change', () => {
         if (cb.checked) dashState.selected.add(cb.dataset.line); else dashState.selected.delete(cb.dataset.line);
-        dashState.confirming = false;
-        renderDashActions(out);
+        syncChecks();
       });
     });
-    renderDashActions(out);
+    document.querySelectorAll('#proj-dash-list .dash-group-check').forEach(cb => {
+      // Ticking the box in a group's header shouldn't also open/close it.
+      cb.addEventListener('click', e => e.stopPropagation());
+      cb.addEventListener('change', () => setLines(groupsByKey[cb.dataset.group].rows, cb.checked));
+    });
+    document.querySelectorAll('#proj-dash-list .dash-group').forEach(d => {
+      d.addEventListener('toggle', () => {
+        if (d.open) dashState.openGroups.add(d.dataset.group); else dashState.openGroups.delete(d.dataset.group);
+        const t = document.getElementById('dash-toggle-groups');
+        if (t) t.textContent = dashState.openGroups.size === groups.length ? 'Collapse all' : 'Expand all';
+      });
+    });
+    const allBox = document.getElementById('dash-check-all');
+    if (allBox) allBox.addEventListener('change', () => setLines(out, allBox.checked));
+    const toggle = document.getElementById('dash-toggle-groups');
+    if (toggle) toggle.addEventListener('click', () => {
+      const openAll = dashState.openGroups.size !== groups.length;
+      document.querySelectorAll('#proj-dash-list .dash-group').forEach(d => { d.open = openAll; });
+    });
+    syncChecks();
   }
 
   function renderDashActions(out) {
@@ -923,7 +1131,9 @@
     const n = dashState.selected.size;
     if (!out.length) { actions.innerHTML = ''; return; }
     if (dashState.confirming && n) {
-      const names = out.filter(r => dashState.selected.has(r.lineId)).map(r => escapeHtml(r.item) + (r.qty ? ' × ' + escapeHtml(r.qty) : ''));
+      const picked = out.filter(r => dashState.selected.has(r.lineId));
+      const names = picked.slice(0, 6).map(r => escapeHtml(r.item) + (r.qty ? ' × ' + escapeHtml(r.qty) : '') + ` <span class="dash-confirm-who">(${escapeHtml(r.name || '—')})</span>`);
+      if (picked.length > 6) names.push(`…and ${picked.length - 6} more`);
       actions.innerHTML = `
         <div class="dash-confirm" role="alertdialog" aria-label="Confirm return">
           <div class="dash-confirm-q">Are these back in the org room?</div>
@@ -947,18 +1157,40 @@
     dashState.busy = true;
     dashState.confirming = false;
     const actions = document.getElementById('proj-dash-actions');
+    if (actions) actions.innerHTML = `<div class="dash-progress">Marking ${ids.length} item${ids.length === 1 ? '' : 's'} returned…</div>`;
     let done = 0;
     const failed = [];
-    for (const id of ids) {
-      if (actions) actions.innerHTML = `<div class="dash-progress">Marking returned… ${done + 1} of ${ids.length}</div>`;
-      try { await postResolve(id); done++; dashState.selected.delete(id); }
-      catch(err) { failed.push(err.message); }
+    try {
+      // One call for the whole batch.
+      const token = getInventoryToken();
+      const res = await fetch(getInventoryScriptUrl() + '?action=resolve', {
+        method: 'POST',
+        headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+        body: JSON.stringify(Object.assign({ idNumber: state.lastId.idNumber, lineIds: ids }, token ? { token } : {}))
+      });
+      const json = await res.json();
+      if (!json || !json.ok) throw new Error((json && json.error) || 'Could not mark returned');
+      if (Array.isArray(json.resolved)) {
+        done = json.resolved.length + (json.alreadyResolved || []).length;
+        (json.missing || []).forEach(() => failed.push('not found'));
+      } else {
+        // Older script (one line per call): it only handled the first; do the rest one by one.
+        done = 1;
+        for (const id of ids.slice(1)) {
+          if (actions) actions.innerHTML = `<div class="dash-progress">Marking returned… ${done + 1} of ${ids.length}</div>`;
+          try { await postResolve(id); done++; } catch(err) { failed.push(err.message); }
+        }
+      }
+      ids.forEach(id => dashState.selected.delete(id));
+    } catch(err) {
+      failed.push(err.message);
     }
     dashState.busy = false;
     if (failed.length) showToast(`${done} marked returned, ${failed.length} failed: ${failed[0]}`, true);
     else showToast(done === 1 ? 'Marked returned' : done + ' items marked returned');
     refreshAfterReturn();
   }
+
 
   let outLoadToken = 0;
   async function renderOut() {
@@ -1159,6 +1391,9 @@
     }
 
     document.getElementById('home-nav-out').addEventListener('click', () => showView('out'));
+    document.getElementById('home-nav-add').addEventListener('click', () => showView('add'));
+    document.getElementById('catalog-add-btn').addEventListener('click', () => showView('add'));
+    bindAddForm();
     document.querySelectorAll('#out-filter .category-chip').forEach(btn => {
       btn.addEventListener('click', () => { state.outFilter = btn.dataset.filter; renderOut(); });
     });
@@ -1516,7 +1751,8 @@
   const CASE_HINTS = {
     BORROWING: 'Borrowing: taking items out of the org room for the project/department above. They stay under it until they\'re marked returned.',
     CONSUMING: 'Using up: supplies that won\'t come back (e.g. tape, paper). The quantity is deducted from the sheet and charged to the project/department above.',
-    RETURNING: 'Returning: bringing back items borrowed for the project/department above. Clears its pending borrows. You can also tap "Mark returned" in Borrowed now.'
+    RETURNING: 'Returning: bringing back items borrowed for the project/department above. Clears its pending borrows. You can also tap "Mark returned" in Borrowed now.',
+    RESTOCKING: 'Adding stock: putting more of these items into the org room. Each item\'s Qty in the sheet goes up by the amount in your cart. For brand-new items, use Add to inventory instead.'
   };
 
   function renderCheckout() {
@@ -1595,7 +1831,7 @@
         if (result && result.queued) {
           showToast('Saved offline — will sync automatically');
         } else {
-          showToast('Request submitted');
+          showToast(state.checkoutCase === 'RESTOCKING' ? 'Stock added' : 'Request submitted');
         }
         state.cart = {};
         updateCartBadge();

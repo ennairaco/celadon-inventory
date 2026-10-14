@@ -8,17 +8,19 @@ Takes about 15 minutes. You need edit access to the **'26-'27 Inventory Tracker*
 2. Pick the **project or department** you're borrowing or using items for. Every borrow or use-up is logged under one, never personally. Anyone can pick any of them; it starts on your own department.
 3. Find items in **CelaCart** (everything in Inventory, Celamerch and Consumables), then check out as **Borrow**, **Use up**, or **Return**.
 4. **Borrowed now** lists what's out, with overdue items in red. Anyone can tap **Mark returned** when an item comes back; the sheet records who did.
+5. On **Home**, the box under the picker lists everything still out for that project/department, grouped by who borrowed it. Tick items (or a whole person, or **Select all**), then **Confirm return**.
+6. **Add to inventory** (Home, or **+ Add item** in CelaCart) creates a new row in the Inventory tab, or in Consumables if it has an expiry date. To add more of something already listed, put it in the cart and choose **Add stock** at checkout.
 
 ## What the app does to your sheet
 
 | Tab | What the app does |
 |---|---|
-| Inventory | Reads every row. Changes only these cells: **Qty** (lowered on "Use up"), **Status** (`Out` when every unit is borrowed, back to `In Storage` when returned, `Used Up` at 0), and a note on the Qty cell recording who did what. Rows marked *Returned to Owner* or *Used Up* are hidden in the app. |
+| Inventory | Reads every row. Changes only these cells: **Qty** (lowered on "Use up", raised on "Add stock"), **Status** (`Out` when every unit is borrowed, back to `In Storage` when returned, `Used Up` at 0), and a note on the Qty cell recording who did what. Rows marked *Returned to Owner* or *Used Up* are hidden in the app. |
 | Celamerch | Reads rows that have a Count. "Use up" lowers **Count** (e.g. merch given out). |
 | Consumables | Same as Inventory. Items with an **Expiry Date** within 14 days get flagged. |
 | MEMBERS, ACCESS, PROJECTS, REQUESTS, BORROWED_NOW | New tabs that `setupSheets` adds for the app. |
 
-The app never adds or deletes rows in Inventory, Celamerch or Consumables. Adding new items is still done in the sheet.
+The app only adds rows through **Add to inventory** (to the next empty row of Inventory or Consumables) and never deletes rows. Re-adding something marked *Used Up* brings its old row back instead of duplicating it.
 
 ## 1. Add the script
 

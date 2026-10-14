@@ -16,6 +16,8 @@ Adapted from MEA's app ([David-GY/mea-id](https://github.com/David-GY/mea-id)). 
 | What's out | Read the comments | `BORROWED_NOW` tab + Borrowed-now screen + "N out" on items |
 | Overdue | None | Daily trigger: highlights overdue rows and emails a digest (and optionally borrowers) |
 | Storage areas | Free text | The Inventory tab's own Storage Area dropdown |
+| Adding items | Edit the sheet | **Add to inventory** form (dropdowns read from the sheet) and **Add stock** at checkout |
+| Returns | One at a time | Home box grouped by borrower with select-all; one request for the whole batch |
 | Item status | None | Inventory `Status` follows borrows (Out / In Storage) and use-ups (Used Up) |
 | Expiry | None | Consumables expiring within 14 days are listed in the daily email and flagged in the app |
 | Projects | Hard-coded MEA list | `PROJECTS` tab, pre-filled with the departments and the Inventory tab's Event names |

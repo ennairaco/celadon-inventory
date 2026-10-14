@@ -39,7 +39,8 @@ function mkSheet(name, data) {
         getValues() { return [((data[r - 1] || []).slice(c - 1, c - 1 + (nc || 1)))]; },
         getNote() { return notes[r + ',' + c] || ''; },
         setNote(n) { notes[r + ',' + c] = n; },
-        setBackground(bg) { sheet.bg = sheet.bg || {}; sheet.bg[r] = bg; }
+        setBackground(bg) { sheet.bg = sheet.bg || {}; sheet.bg[r] = bg; },
+        getDataValidation() { const v = (sheet.validation || {})[c]; return v ? { getCriteriaValues: () => [v] } : null; }
       });
     }
   };
@@ -175,6 +176,50 @@ assert.strictEqual(invRow('Pushpins', 'COMMPUB')[QTY], '*');
 assert.strictEqual(sheets.Celamerch.data.find(x => x[2] === 'Koi')[5], 50);
 assert.ok(!get({ action: 'inventory' }).items.some(i => i.title === 'Masking Tape'));
 
+// Add stock: numeric Qty goes up, "*" left alone
+const tripodsBefore = invRow('Tripods', 'COMMPUB')[QTY];
+r = post('submitOrder', { clientId: 'r1', idNumber: '212345', caseType: 'RESTOCKING', actingAs: 'COMMPUB',
+  items: [{ ref: tripods.ref, title: 'Tripods', qty: 3 }, { ref: pins.ref, title: pins.title, qty: 10 }] });
+assert.ok(r.ok, JSON.stringify(r));
+assert.strictEqual(invRow('Tripods', 'COMMPUB')[QTY], tripodsBefore + 3);
+assert.strictEqual(invRow('Pushpins', 'COMMPUB')[QTY], '*');
+
+// Add-item form options come from the Inventory tab's dropdowns
+sheets.Inventory.validation = { 6: ['General', 'OP', 'COMMPUB', 'CUL'], 9: ['Metal Drawer (Top)', 'Shelf'] };
+const opts = get({ action: 'options' }).options;
+assert.deepStrictEqual(opts.departments, ['General', 'OP', 'COMMPUB', 'CUL']);
+assert.deepStrictEqual(opts.storageAreas, ['Metal Drawer (Top)', 'Shelf']);
+
+// Add a new item → appended right after the last item row, In Storage, listed, logged
+const lastBefore = sheets.Inventory.data.length;
+r = post('addItem', { idNumber: '212346', title: 'Glitter Glue', qty: '12', unit: 'pcs', department: 'CUL', type: 'Art & Craft Supplies',
+  category: 'Supplies', storage: 'Shelf', spot: 'CUL Bag 1', notes: 'For LDP' });
+assert.ok(r.ok && r.tab === 'Inventory', JSON.stringify(r));
+const added = sheets.Inventory.data[r.row - 1];
+assert.strictEqual(r.row, lastBefore + 1, 'written to the next empty row');
+assert.deepStrictEqual([added[1], added[3], added[5], added[STATUS], added[8], added[9]], ['Glitter Glue', 12, 'CUL', 'In Storage', 'Shelf', 'CUL Bag 1']);
+assert.ok(get({ action: 'inventory' }).items.some(i => i.title === 'Glitter Glue' && i.ref === r.ref));
+assert.ok(requests().some(x => x[col('Case')] === 'ADDING' && x[col('Item')] === 'Glitter Glue' && x[col('Name')] === 'Maria Santos'));
+
+// Duplicates refused; bad qty refused; non-members refused
+assert.match(post('addItem', { idNumber: '212346', title: 'glitter glue', qty: '1', department: 'CUL', storage: 'Shelf', spot: 'CUL Bag 1' }).error, /already in the inventory/);
+assert.match(post('addItem', { idNumber: '212346', title: 'Tape', qty: 'two', department: 'CUL' }).error, /whole number/);
+assert.match(post('addItem', { idNumber: '000001', title: 'Tape', qty: '2', department: 'CUL' }).error, /not in the member list/);
+assert.match(post('addItem', { idNumber: '212346', title: 'Tape', qty: '2' }).error, /department/);
+
+// Expiry date → Consumables tab
+r = post('addItem', { idNumber: '212347', title: 'Hand Sanitizer', qty: '6', unit: 'bottles', department: 'HR', expiry: new Date(today.getTime() + 60 * DAY).toISOString() });
+assert.strictEqual(r.tab, 'Consumables');
+assert.ok(sheets.Consumables.data.some(x => x[1] === 'Hand Sanitizer' && x[8] instanceof Date));
+
+// Re-adding a Used Up item brings the old row back instead of duplicating it
+const tapeRows = () => sheets.Inventory.data.filter(x => x[1] === 'Masking Tape').length;
+r = post('addItem', { idNumber: '212345', title: 'Masking Tape', qty: '4', department: 'COMMPUB', storage: 'Metal Drawer (Top)', spot: 'Office supplies box' });
+assert.ok(r.ok && r.revived, JSON.stringify(r));
+assert.strictEqual(tapeRows(), 1);
+assert.strictEqual(invRow('Masking Tape', 'COMMPUB')[QTY], 4);
+assert.strictEqual(invRow('Masking Tape', 'COMMPUB')[STATUS], 'In Storage');
+
 // Resolve: any member can (HR's Ana returns MAF's scissors); Status back to In Storage
 let hist = get({ action: 'history' }).records;
 const mafLine = hist.find(x => x.project === 'Mid-Autumn Festival');
@@ -182,6 +227,19 @@ assert.match(post('resolve', { idNumber: '000001', lineId: mafLine.lineId }).err
 assert.ok(post('resolve', { idNumber: '212347', lineId: mafLine.lineId }).ok);
 assert.strictEqual(invRow('Scissors', 'CUL')[STATUS], 'In Storage');
 assert.strictEqual(requests()[1][col('Resolved By')], 'Ana Lim');
+
+// Bulk resolve: several lines in one call; repeats and unknown IDs reported, not fatal
+const pendingBefore = new Set(get({ action: 'history' }).records.filter(x => !x.resolved).map(x => x.lineId));
+post('submitOrder', { clientId: 'b1', idNumber: '212345', caseType: 'BORROWING', actingAs: 'COMMPUB', items: [{ ref: find('Scissors', 'COMMPUB').ref, title: 'Scissors', qty: 1 }] });
+post('submitOrder', { clientId: 'b2', idNumber: '212346', caseType: 'BORROWING', actingAs: 'COMMPUB', items: [{ ref: tripods.ref, title: 'Tripods', qty: 1 }] });
+const bulkLines = get({ action: 'history' }).records.filter(x => !x.resolved && !pendingBefore.has(x.lineId)).map(x => x.lineId);
+assert.strictEqual(bulkLines.length, 2);
+const bulk = post('resolve', { idNumber: '212347', lineIds: bulkLines.concat([mafLine.lineId, 'NOPE-1']) });
+assert.ok(bulk.ok, JSON.stringify(bulk));
+assert.deepStrictEqual(bulk.resolved.slice().sort(), bulkLines.slice().sort());
+assert.deepStrictEqual(bulk.alreadyResolved, [mafLine.lineId]);
+assert.deepStrictEqual(bulk.missing, ['NOPE-1']);
+assert.strictEqual(invRow('Scissors', 'COMMPUB')[STATUS], 'In Storage', 'status restored after bulk return');
 
 // Checkout "Return" clears the project's borrow
 post('submitOrder', { clientId: 'c4', idNumber: '212345', caseType: 'BORROWING', actingAs: 'Mid-Autumn Festival', items: [{ ref: cul.ref, title: 'Scissors', qty: 5 }] });

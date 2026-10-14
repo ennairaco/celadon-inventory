@@ -15,7 +15,7 @@
 <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Montserrat:ital,wght@0,400;0,500;0,600;0,700;0,800;1,600&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="inventory.css?v=8">
+<link rel="stylesheet" href="inventory.css?v=10">
 </head>
 <body>
 <div class="desktop-frame">
@@ -107,6 +107,14 @@
           <div class="home-nav-text">
             <div class="home-nav-title">Borrowed now</div>
             <div class="home-nav-sub" id="out-sub">What's out of the org room</div>
+          </div>
+          <div class="home-nav-chevron" aria-hidden="true">›</div>
+        </div>
+        <div class="home-nav-card" id="home-nav-add" role="button" tabindex="0">
+          <div class="home-nav-icon"><img class="svg-icon" src="icons/ui/plus.svg" alt=""></div>
+          <div class="home-nav-text">
+            <div class="home-nav-title">Add to inventory</div>
+            <div class="home-nav-sub">Log new items brought into the org room</div>
           </div>
           <div class="home-nav-chevron" aria-hidden="true">›</div>
         </div>
@@ -203,6 +211,72 @@
       </div>
     </section>
 
+    <!-- ===================== View: Add to inventory ===================== -->
+    <section class="view" id="view-add">
+      <div class="top-brand">
+        <img class="top-brand-mark" src="brand/dreagle-mark.png" alt="Ateneo Celadon">
+      </div>
+      <div class="history-head">
+        <div class="history-title">Add to inventory</div>
+      </div>
+      <form class="add-form" id="add-form" novalidate>
+        <div class="add-intro">
+          <img src="brand/ayi/ayi.png" alt="">
+          <div>New things for the org room? Log them here so everyone can find them. To add more of something already listed, use <strong>Add stock</strong> at checkout.</div>
+        </div>
+
+        <label class="field-label" for="add-title">Item name <span class="req">*</span></label>
+        <input type="text" class="text-field" id="add-title" placeholder="Easy to search, e.g. Extension Cord (5m)" autocomplete="off" required>
+
+        <div class="add-row">
+          <div>
+            <label class="field-label" for="add-qty">Quantity</label>
+            <input type="text" class="text-field" id="add-qty" inputmode="numeric" placeholder="e.g. 5, or * for a lot" autocomplete="off">
+          </div>
+          <div>
+            <label class="field-label" for="add-unit">Unit</label>
+            <input type="text" class="text-field" id="add-unit" placeholder="pcs, packs, sets" autocomplete="off">
+          </div>
+        </div>
+
+        <label class="field-label" for="add-dept">Department that owns it <span class="req">*</span></label>
+        <select id="add-dept" required></select>
+
+        <div class="add-row">
+          <div>
+            <label class="field-label" for="add-type">Type</label>
+            <select id="add-type"></select>
+          </div>
+          <div>
+            <label class="field-label" for="add-category">Category</label>
+            <select id="add-category"></select>
+          </div>
+        </div>
+
+        <label class="field-label" for="add-storage">Storage area</label>
+        <select id="add-storage"></select>
+
+        <label class="field-label" for="add-spot">Specific spot <span class="opt">(optional)</span></label>
+        <input type="text" class="text-field" id="add-spot" placeholder="e.g. CUL MAF Box, office supplies box" autocomplete="off">
+
+        <label class="field-label" for="add-event">Event <span class="opt">(optional)</span></label>
+        <select id="add-event"></select>
+
+        <label class="add-check"><input type="checkbox" id="add-expires"> It has an expiry date</label>
+        <div id="add-expiry-wrap" style="display:none;">
+          <label class="field-label" for="add-expiry">Expiry date</label>
+          <input type="date" class="text-field" id="add-expiry">
+          <div class="case-hint" style="margin-top:-8px;margin-bottom:14px;">Items that expire are saved to the Consumables tab.</div>
+        </div>
+
+        <label class="field-label" for="add-notes">Notes <span class="opt">(optional)</span></label>
+        <textarea class="text-field" id="add-notes" rows="2" placeholder="Colours, condition, who to ask before borrowing…"></textarea>
+
+        <div class="login-error" id="add-error" role="alert"></div>
+        <button type="submit" class="btn-primary" id="add-submit">ADD TO INVENTORY</button>
+      </form>
+    </section>
+
     <!-- ===================== View: Borrowed now ===================== -->
     <section class="view" id="view-out">
       <div class="top-brand">
@@ -240,6 +314,7 @@
           <button class="icon-btn" id="format-list-btn" title="List view" aria-label="List view" aria-pressed="false"><img class="svg-icon" src="icons/ui/list.svg" alt=""></button>
         </div>
         <div id="catalog-result-count" style="font-size:11px;color:var(--text-dim);">Tap an item to add it to your cart</div>
+        <button type="button" class="add-item-btn" id="catalog-add-btn">+ Add item</button>
       </div>
       <div id="catalog-container" class="item-grid"></div>
     </section>
@@ -261,6 +336,7 @@
         <button type="button" class="case-btn active" data-case="BORROWING">Borrow</button>
         <button type="button" class="case-btn" data-case="CONSUMING">Use up</button>
         <button type="button" class="case-btn" data-case="RETURNING">Return</button>
+        <button type="button" class="case-btn" data-case="RESTOCKING">Add stock</button>
       </div>
       <div class="case-hint" id="case-hint">Borrowing: taking items out of the org room for the project/department above. They stay under it until they're marked returned.</div>
 
@@ -344,6 +420,6 @@
   </div>
 
 </div>
-<script src="inventory.js?v=11"></script>
+<script src="inventory.js?v=15"></script>
 </body>
 </html>
