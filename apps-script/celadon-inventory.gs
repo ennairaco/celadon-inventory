@@ -77,10 +77,10 @@ var CELA = {
       'Storage Area', 'Status', 'Due', 'Resolved At', 'Resolved By', 'Last Reminded'
     ]
   },
-  DEPARTMENTS: ['COMMPUB', 'CUL', 'EXREL', 'FIN', 'HR', 'OSR'],
+  DEPARTMENTS: ['OP', 'COMMPUB', 'CUL', 'EXREL', 'FIN', 'HR', 'OSR'],
   // Departments, then the Inventory tab's own Event names so they match.
   DEFAULT_PROJECTS: [
-    'COMMPUB', 'CUL', 'EXREL', 'FIN', 'HR', 'OSR', 'General',
+    'OP', 'COMMPUB', 'CUL', 'EXREL', 'FIN', 'HR', 'OSR', 'General',
     'Recruitment and Welcome Week', 'Celadon Merchandise', 'General Assembly',
     'Mid-Autumn Festival', 'Lunar Lotus Market', 'TALAB x Faculty Appreciation Week',
     'Jade Business Summit', 'Leadership Development Program', 'Celadon Rose Sale',
@@ -96,6 +96,7 @@ var CELA = {
 
 // Full department names (as they may appear in the member list) → codes.
 var DEPT_ALIASES = {
+  officeofthepresident: 'OP', president: 'OP',
   communicationsandpublications: 'COMMPUB', communicationsandpublicationsdepartment: 'COMMPUB',
   culturalaffairs: 'CUL', culturalaffairsdepartment: 'CUL',
   externalrelations: 'EXREL', externalrelationsdepartment: 'EXREL',

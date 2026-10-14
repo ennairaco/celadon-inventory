@@ -280,7 +280,7 @@
     // (action=projects) so officers can add a project without a code change.
     const PROJECT_OPTIONS = [
       // Departments
-      'COMMPUB', 'CUL', 'EXREL', 'FIN', 'HR', 'OSR', 'General',
+      'OP', 'COMMPUB', 'CUL', 'EXREL', 'FIN', 'HR', 'OSR', 'General',
       // Projects (same names as the Inventory tab's Event column)
       'Recruitment and Welcome Week', 'Celadon Merchandise', 'General Assembly',
       'Mid-Autumn Festival', 'Lunar Lotus Market', 'TALAB x Faculty Appreciation Week',

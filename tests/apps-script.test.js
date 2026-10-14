@@ -84,7 +84,8 @@ const MEMBER_ROWS = [
   [212345, 'Juan Dela Cruz', 'Communications and Publications', 'Associate', 'juan@example.com'],
   [212346, 'Maria Santos', 'CUL', 'Associate', 'maria@example.com'],
   [212347, 'Ana Lim', 'HR', 'Associate', ''],
-  [212348, 'Officer Tan', 'FIN', 'VP', 'tan@example.com']
+  [212348, 'Officer Tan', 'FIN', 'VP', 'tan@example.com'],
+  [212349, 'Pres Uy', 'Office of the President', 'President', '']
 ];
 const ss = chain({
   getSheetByName: n => sheets[n] || null,
@@ -139,6 +140,8 @@ assert.ok(find('Sunscreen', 'HR').expiry, 'consumable expiry passed through');
 assert.deepStrictEqual(get({ action: 'login', id: '212345' }).actFor, ['COMMPUB', 'Mid-Autumn Festival']);
 assert.deepStrictEqual(get({ action: 'login', id: '212348' }).actFor, ['*']);
 assert.strictEqual(get({ action: 'login', id: '999999' }).found, false);
+assert.deepStrictEqual(get({ action: 'login', id: '212349' }).actFor, ['OP'], 'Office of the President → OP');
+assert.ok(get({ action: 'projects' }).projects.includes('OP'));
 const cul = find('Scissors', 'CUL');
 assert.match(post('submitOrder', { idNumber: '212345', caseType: 'BORROWING', items: [{ ref: cul.ref, title: 'Scissors', qty: 1 }] }).error, /Choose the project/);
 assert.match(post('submitOrder', { idNumber: '212347', caseType: 'BORROWING', actingAs: 'Mid-Autumn Festival', items: [{ ref: cul.ref, title: 'Scissors', qty: 1 }] }).error, /only log requests/);
