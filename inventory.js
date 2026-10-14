@@ -1,34 +1,32 @@
 /* ==================================================================
-     MEA ID Tracker — client logic
+     Celadon Inventory (CelaCart) — client logic
+     Adapted from MEA's app (github.com/David-GY/mea-id)
      ================================================================== */
 
   // GitHub Pages does not provide Apps Script's google.script.run object. This
   // small local adapter keeps the app usable there while preserving the same
   // call shape for Apps Script deployments. getInventory specifically now
   // fetches LIVE data from the Apps Script backend (action=inventory) when a
-  // Script URL is configured, matching how the ID Tracker and Access gate
-  // already talk to the same backend — falling back to demo data only when
+  // Script URL is configured (the same script also handles login) — falling back to demo data only when
   // no URL is set yet or the request fails, so the app never breaks.
   if (!window.google || !window.google.script || !window.google.script.run) {
     const demoInventory = [
-      { id: 'ITM-100', title: 'Safety Vest', category: 'Safety', qtyAvailable: 5, qtyDisplay: '5' },
-      { id: 'ITM-101', title: 'Hard Hat', category: 'Safety', qtyAvailable: 6, qtyDisplay: '6' },
-      { id: 'ITM-102', title: 'Wire Spool', category: 'Electrical', qtyAvailable: 7, qtyDisplay: '7' },
-      { id: 'ITM-103', title: 'Multimeter', category: 'Electrical', qtyAvailable: 8, qtyDisplay: '8' },
-      { id: 'ITM-104', title: 'Toolbox', category: 'Tools', qtyAvailable: 9, qtyDisplay: '9' },
-      { id: 'ITM-105', title: 'Extension Cord', category: 'Electrical', qtyAvailable: 10, qtyDisplay: '10' },
-      { id: 'ITM-106', title: 'Work Gloves', category: 'Safety', qtyAvailable: 11, qtyDisplay: '11' },
-      { id: 'ITM-107', title: 'Clipboard', category: 'General', qtyAvailable: 12, qtyDisplay: '12' },
-      { id: 'ITM-108', title: 'Flashlight', category: 'General', qtyAvailable: 13, qtyDisplay: '13' }
+      { id: 'ITM-100', title: 'CLDN Letters', category: 'Misc', location: 'Outside Org Room', qtyAvailable: 1, qtyDisplay: '1' },
+      { id: 'ITM-101', title: 'Scissors', category: 'COMMPUB', location: 'Metal Drawer (Top)', qtyAvailable: 1, qtyDisplay: '1' },
+      { id: 'ITM-102', title: 'Stapler', category: 'COMMPUB', location: 'Metal Drawer (Top)', qtyAvailable: 3, qtyDisplay: '3' },
+      { id: 'ITM-103', title: 'Binder Clips', category: 'COMMPUB', location: 'Metal Drawer (Top)', qtyAvailable: null, qtyDisplay: 'many' },
+      { id: 'ITM-104', title: 'Plastic Bowls', category: 'MAF', location: 'Org Room', qtyAvailable: 17, qtyDisplay: '17' },
+      { id: 'ITM-105', title: 'Red Table Cloth', category: 'MAF', location: 'Org Room', qtyAvailable: 6, qtyDisplay: '6' },
+      { id: 'ITM-106', title: 'Koi Lanyard (25-26)', category: 'Merch', location: 'Org Room', qtyAvailable: 52, qtyDisplay: '52' }
     ];
 
-    function getMeaInventoryScriptUrl() {
+    function getCelaInventoryScriptUrl() {
       try {
-        return (localStorage.getItem('mea_inventory_url') || '').trim();
+        return (localStorage.getItem('cela_inventory_url') || '').trim();
       } catch(e) { return ''; }
     }
 
-    const INVENTORY_CACHE_KEY = 'mea_inventory_cache';
+    const INVENTORY_CACHE_KEY = 'cela_inventory_cache';
 
     function getCachedInventory() {
       try {
@@ -56,8 +54,8 @@
     }
 
     async function fetchLiveInventory() {
-      window.__meaInventoryDebugError = null;
-      const url = getMeaInventoryScriptUrl();
+      window.__celaInventoryDebugError = null;
+      const url = getCelaInventoryScriptUrl();
       if (!url) {
         showInventoryDebug('No Inventory Script URL configured yet.\n\nGo to Home > Settings > paste your Inventory Apps Script URL into the "Inventory Script URL" field > Save.');
         return demoInventory; // not configured yet — safe fallback
@@ -72,7 +70,7 @@
         res = await fetch(url + '?action=inventory');
         text = await res.text();
       } catch(networkErr) {
-        console.error('[MEA Inventory] Network error reaching script:', networkErr);
+        console.error('[Cela Inventory] Network error reaching script:', networkErr);
         return offlineOrCachedFallback('Network error — could not reach the Inventory script.');
       }
 
@@ -80,14 +78,14 @@
       try {
         json = JSON.parse(text);
       } catch(parseErr) {
-        console.error('[MEA Inventory] Response was not valid JSON:', text);
+        console.error('[Cela Inventory] Response was not valid JSON:', text);
         showInventoryDebug('Got a response, but it wasn\'t valid JSON (likely an HTML error page from Apps Script).\n\nFirst 400 characters of the response:\n\n' + text.substring(0, 400));
         return demoInventory;
       }
 
       if (json && json.ok && Array.isArray(json.items)) {
-        console.log('[MEA Inventory] Loaded', json.items.length, 'items from the sheet.');
-        window.__meaInventoryDebugError = null;
+        console.log('[Cela Inventory] Loaded', json.items.length, 'items from the sheet.');
+        window.__celaInventoryDebugError = null;
         const mapped = json.items.map((item, i) => {
           const rawQty = String(item.qty || '').trim();
           const numericQty = parseInt(rawQty, 10);
@@ -98,6 +96,7 @@
             location: item.location || '',
             notes: item.notes || '',
             qtyDisplay: rawQty || '—',
+            out: Number(item.out) || 0, // currently borrowed (pending in REQUESTS)
             qtyAvailable: !isNaN(numericQty) ? numericQty : null // null = uncapped (e.g. "*", "2 packs")
           };
         });
@@ -107,17 +106,17 @@
 
       // Script responded with valid JSON but ok:false or unexpected shape
       const errMsg = (json && json.error) ? json.error : 'Unexpected response shape (missing ok/items).';
-      console.error('[MEA Inventory] Script returned an error:', errMsg, json);
+      console.error('[Cela Inventory] Script returned an error:', errMsg, json);
       showInventoryDebug('Script responded but reported an error:\n\n' + errMsg + '\n\nFull response:\n' + JSON.stringify(json, null, 2));
       return demoInventory;
     }
 
     function showInventoryDebug(message) {
-      window.__meaInventoryDebugError = message;
+      window.__celaInventoryDebugError = message;
     }
 
-    const PENDING_ORDERS_KEY = 'mea_pending_orders';
-    const FAILED_ORDERS_KEY = 'mea_failed_orders';
+    const PENDING_ORDERS_KEY = 'cela_pending_orders';
+    const FAILED_ORDERS_KEY = 'cela_failed_orders';
     const MAX_ORDER_ATTEMPTS = 5;
 
     function getPendingOrders() {
@@ -173,7 +172,7 @@
     // but the response never reached us, a hardened backend can recognize
     // it and skip inserting the order twice.
     async function trySubmitOrderToSheet(payload, clientId) {
-      const url = getMeaInventoryScriptUrl();
+      const url = getCelaInventoryScriptUrl();
       if (!url) throw new Error('No Inventory Script URL configured yet — go to Home > Settings.');
 
       const token = getInventoryToken();
@@ -198,7 +197,9 @@
       catch (parseErr) { throw new Error('Script returned an unexpected response.'); }
 
       if (!json || !json.ok) {
-        throw new Error((json && json.error) ? json.error : 'Script reported an error.');
+        const serverErr = new Error((json && json.error) ? json.error : 'Script reported an error.');
+        serverErr.fromServer = true; // a real rejection (e.g. not allowed for that project), not a network blip
+        throw serverErr;
       }
       return json;
     }
@@ -267,15 +268,34 @@
     window.addEventListener('online', () => { flushPendingOrders(); });
     setInterval(() => { if (navigator.onLine) flushPendingOrders(); }, 20000);
 
+    // Fallback only — the live list comes from the sheet's PROJECTS tab
+    // (action=projects) so officers can add a project without a code change.
     const PROJECT_OPTIONS = [
-      'Personal','STEPS', 'RWGA', 'ACTS', 'MEAMORE', 'FIESTA', 'PRIME', 'ACSC', 'LEADS',
-      'ABM', 'MEA CARES', 'TEDx', 'CB', 'IMD', 'MCD', 'HR:TD', 'HR:MEM',
-      'YDC', 'EXT', 'FIN', 'SUS', 'COMEALEC'
+      // Departments
+      'COMMPUB', 'CUL', 'EXREL', 'FIN', 'HR', 'OSR',
+      // Projects
+      'Recruitment Week & Welcome Week', 'Celadon Merchandise', 'GA', 'MAF',
+      'Lunar Lotus Market', 'TALAB x FAW', 'Jade Business Summit', 'LDP',
+      'Celadon Rose Sale', 'CNY', 'Spring Film Festival', 'Binondo Amazing Race',
+      'Mandopop Music Festival', 'Celadon Ball'
     ];
+
+    async function fetchLiveProjects() {
+      const url = getCelaInventoryScriptUrl();
+      if (!url || !navigator.onLine) return PROJECT_OPTIONS.slice();
+      try {
+        const res = await fetch(url + '?action=projects');
+        const json = await res.json();
+        if (json && json.ok && Array.isArray(json.projects) && json.projects.length) {
+          return json.projects;
+        }
+      } catch(e) {}
+      return PROJECT_OPTIONS.slice();
+    }
 
     const localMethods = {
       getInventory: () => fetchLiveInventory(),
-      getProjectOptions: () => PROJECT_OPTIONS.slice(),
+      getProjectOptions: () => fetchLiveProjects(),
       lookupIdNumber: (idNumber) => ({
         found: /^\d{6}$/.test(String(idNumber).trim()),
         idNumber: String(idNumber).trim(), name: '', level: 'NONE',
@@ -284,14 +304,14 @@
       submitOrder: async (payload) => {
         // Always keep a full local history — this never fails, regardless
         // of network state, so an order is never silently lost.
-        const orders = JSON.parse(localStorage.getItem('mea_inventory_orders') || '[]');
+        const orders = JSON.parse(localStorage.getItem('cela_inventory_orders') || '[]');
         orders.unshift({ ...payload, createdAt: new Date().toISOString() });
-        localStorage.setItem('mea_inventory_orders', JSON.stringify(orders));
+        localStorage.setItem('cela_inventory_orders', JSON.stringify(orders));
 
         const clientId = crypto.randomUUID ? crypto.randomUUID() : (Date.now() + '-' + Math.random().toString(36).slice(2));
 
         // No URL configured yet — nothing to sync to, but don't lose the order.
-        if (!getMeaInventoryScriptUrl()) {
+        if (!getCelaInventoryScriptUrl()) {
           enqueuePendingOrder(payload);
           return { success: true, queued: true, reason: 'not-configured' };
         }
@@ -309,6 +329,7 @@
           const json = await trySubmitOrderToSheet(payload, clientId);
           return { success: true, queued: false, orderId: 'ORD-' + Date.now(), logged: json.logged };
         } catch(err) {
+          if (err.fromServer) throw err; // show the reason instead of retrying something that will keep failing
           enqueuePendingOrder(payload, clientId);
           return { success: true, queued: true, reason: 'error', message: err.message };
         }
@@ -334,7 +355,9 @@
     lastId: null,            // logged-in ID lookup result: { idNumber, name, role, committee, status }
     projectOptions: [],
     historyTab: 'personal',  // personal | project
-    checkoutCase: 'BORROWING' // BORROWING | CONSUMING | RETURNING
+    checkoutCase: 'BORROWING', // BORROWING | CONSUMING | RETURNING
+    actingAs: '',            // project/department every request is logged under
+    outFilter: 'mine'        // Borrowed-now view: mine (my projects/depts) | all
   };
 
   /* =========================================================
@@ -342,7 +365,7 @@
      The logged-in ID stays on the device across reloads/relaunches
      until the person taps "Log out" in Settings.
      ========================================================= */
-  const LOGIN_KEY = 'mea_login_v1';
+  const LOGIN_KEY = 'cela_login_v1';
 
   function getSavedLogin() {
     try {
@@ -357,61 +380,39 @@
     try { localStorage.removeItem(LOGIN_KEY); } catch(e) {}
   }
 
-  /* =========================================================
-     PERMISSION MODEL
-     Matches the real ACCESS sheet: column C ("Level") holds one of
-     Admin / Tracker / Dashboard for people who get elevated access.
-     Anyone not listed in ACCESS can still log in (as long as they're
-     in MAIN) but gets neither ID Tracker nor SUS Dashboard.
-       Admin      → ID Tracker + SUS Dashboard
-       Tracker    → ID Tracker only
-       Dashboard  → SUS Dashboard only
-       (anything else / not listed) → neither
-     ========================================================= */
-  function canOpenTracker(loginResult) {
-    if (!loginResult) return false;
-    const level = String(loginResult.level || '').trim().toUpperCase();
-    return level === 'ADMIN' || level === 'TRACKER';
-  }
-  function canOpenDashboard(loginResult) {
-    if (!loginResult) return false;
-    const level = String(loginResult.level || '').trim().toUpperCase();
-    return level === 'ADMIN' || level === 'DASHBOARD';
-  }
-
   /**
-   * Logs an ID number in against the combined Apps Script.
-   *   GET <trackerUrl>?action=login&id=<6-digit id>
-   * Response: { ok:true, found:true/false, idNumber, name, level }
-   * found:false means the ID isn't a valid 6-digit number in MAIN.
-   * level is "NONE" (or missing) when the ID isn't in ACCESS at all.
+   * Logs an ID number in against the Celadon Inventory Apps Script.
+   *   GET <inventoryUrl>?action=login&id=<6-digit id>
+   * Response: { ok:true, found:true/false, idNumber, name, department, level }
+   * found:false means the ID isn't in the MEMBERS tab.
+   * level is "NONE" when the ID isn't in ACCESS.
    */
   async function fetchIdLookup(idNumber) {
-    const url = getTrackerScriptUrl();
+    const url = getInventoryScriptUrl();
     if (!url) {
       return { found: false, idNumber: String(idNumber).trim(), name: '', level: 'NONE', status: 'NOT_CONFIGURED' };
     }
     let res, text;
     try {
       const loginParams = new URLSearchParams({ action: 'login', id: idNumber });
-      const token = getTrackerToken();
+      const token = getInventoryToken();
       if (token) loginParams.set('token', token);
       res = await fetch(url + '?' + loginParams.toString());
       text = await res.text();
     } catch (networkErr) {
-      console.error('[MEA Login] Network error during lookup:', networkErr);
+      console.error('[Cela Login] Network error during lookup:', networkErr);
       return { found: false, idNumber: String(idNumber).trim(), name: '', level: 'NONE', status: 'NETWORK_ERROR' };
     }
 
     let json;
     try { json = JSON.parse(text); }
     catch (parseErr) {
-      console.error('[MEA Login] Lookup response was not valid JSON:', text);
+      console.error('[Cela Login] Lookup response was not valid JSON:', text);
       return { found: false, idNumber: String(idNumber).trim(), name: '', level: 'NONE', status: 'ERROR' };
     }
 
     if (!json || json.ok === false) {
-      console.error('[MEA Login] Script reported an error:', json && json.error, json);
+      console.error('[Cela Login] Script reported an error:', json && json.error, json);
       return { found: false, idNumber: String(idNumber).trim(), name: '', level: 'NONE', status: 'ERROR' };
     }
 
@@ -420,7 +421,9 @@
         found: true,
         idNumber: json.idNumber || String(idNumber).trim(),
         name: json.name || '',
+        committee: json.department || '',
         level: (json.level || 'NONE').toUpperCase(),
+        actFor: Array.isArray(json.actFor) ? json.actFor : [],
         status: 'ACTIVE'
       };
     }
@@ -437,31 +440,6 @@
       if (idEl) idEl.textContent = idText;
       if (nameEl) nameEl.textContent = nameText;
     });
-  }
-
-  function updateHomeCardStates() {
-    const trackerCard = document.getElementById('home-nav-idtracker');
-    const trackerSub = document.getElementById('idtracker-sub');
-    const dashCard = document.getElementById('home-nav-dashboard');
-    const dashSub = document.getElementById('dashboard-sub');
-    if (!trackerCard || !dashCard) return;
-
-    const trackerOk = canOpenTracker(state.lastId);
-    const dashOk = canOpenDashboard(state.lastId);
-    trackerCard.classList.toggle('disabled', !trackerOk);
-    dashCard.classList.toggle('disabled', !dashOk);
-    document.querySelectorAll('.restricted-dashboard-nav').forEach(btn => {
-      btn.classList.toggle('disabled', !dashOk);
-      btn.setAttribute('aria-hidden', dashOk ? 'false' : 'true');
-    });
-
-    if (!getTrackerScriptUrl()) {
-      trackerSub.textContent = 'Setup required — contact an admin';
-      dashSub.textContent = 'Setup required — contact an admin';
-      return;
-    }
-    trackerSub.textContent = trackerOk ? 'Scan & verify a MEA ID' : 'Restricted — Tracker access required';
-    dashSub.textContent = dashOk ? 'Analytics & reports' : 'Restricted — Dashboard access required';
   }
 
   /* ---------------- Accessibility: keyboard support for role="button" divs ----------------
@@ -502,9 +480,11 @@
     const saved = getSavedLogin();
     if (saved && saved.idNumber) {
       state.lastId = saved;
+      state.actingAs = getSavedActingAs();
       renderIdentity();
-      updateHomeCardStates();
+      renderActForSelects();
       showView('home');
+      refreshLoginInBackground();
     } else {
       showView('login');
     }
@@ -545,15 +525,11 @@
     });
   }
 
-  // Views that use the SUS/MEA identity header + the Home/Settings/Help
+  // Views that use the Celadon identity header + the Home/Settings/Help
   // bottom nav instead of the standard app header + Catalog/Cart/Checkout nav.
-  const MAIN_VIEWS = ['home', 'settings', 'help', 'history', 'dashboard', 'activity-log'];
+  const MAIN_VIEWS = ['home', 'settings', 'help', 'history', 'out'];
 
   function showView(view) {
-    if ((view === 'dashboard' || view === 'activity-log') && !canOpenDashboard(state.lastId)) {
-      showToast('You don\'t have permission to open SUS Dashboard', true);
-      return;
-    }
     state.view = view;
     document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
     document.querySelectorAll('.nav-btn').forEach(b => b.classList.remove('active'));
@@ -584,19 +560,16 @@
     applyMainNavForView(view);
 
     if (view === 'settings') {
-      document.getElementById('settings-script-url').value = getTrackerScriptUrl();
-      const trackerTokenInput = document.getElementById('settings-tracker-token');
-      if (trackerTokenInput) trackerTokenInput.value = getTrackerToken();
       document.getElementById('settings-inventory-url').value = getInventoryScriptUrl();
       const tokenInput = document.getElementById('settings-inventory-token');
       if (tokenInput) tokenInput.value = getInventoryToken();
     }
-    if (view === 'home') updateHomeCardStates();
     if (view === 'history') setHistoryTab('personal');
+    if (view === 'out') renderOut();
+    if (view === 'home') updateOutCount();
     if (view === 'cart') renderCart();
     if (view === 'checkout') renderCheckout();
     if (view === 'catalog') loadInventory();
-    document.dispatchEvent(new CustomEvent('mea:viewchange', { detail: { view: view } }));
   }
 
   // ── History view's Personal/Project tabs ──
@@ -635,7 +608,10 @@
     }
 
     const projectSelect = document.getElementById('history-project-select');
-    if (projectSelect) projectSelect.style.display = tab === 'project' ? '' : 'none';
+    if (projectSelect) {
+      projectSelect.style.display = tab === 'project' ? '' : 'none';
+      if (tab === 'project' && !projectSelect.value && state.actingAs) projectSelect.value = state.actingAs;
+    }
 
     renderHistory();
   }
@@ -643,7 +619,7 @@
   // ── History data: fetched from the Inventory Apps Script (action=history),
   // cached locally so History still shows the last-known data offline,
   // exactly like the Catalog's inventory cache.
-  const HISTORY_CACHE_KEY = 'mea_history_cache';
+  const HISTORY_CACHE_KEY = 'cela_history_cache';
 
   function getCachedHistory() {
     try {
@@ -668,7 +644,10 @@
     }
 
     try {
-      const res = await fetch(url + '?action=history');
+      const params = new URLSearchParams({ action: 'history' });
+      const token = getInventoryToken();
+      if (token) params.set('token', token);
+      const res = await fetch(url + '?' + params.toString());
       const json = await res.json();
       if (json && json.ok && Array.isArray(json.records)) {
         setCachedHistory(json.records);
@@ -686,20 +665,170 @@
     }
   }
 
-  function historyRowHtml(rec) {
-    const when = rec.time ? new Date(rec.time).toLocaleDateString(undefined, { month: 'short', day: 'numeric' }) : '';
-    const caseLabel = rec.caseType === 'CONSUMING' ? 'Consumed' : (rec.resolved ? 'Returned' : 'Borrowed');
+  function shortDate(iso) {
+    return iso ? new Date(iso).toLocaleDateString(undefined, { month: 'short', day: 'numeric' }) : '';
+  }
+
+  // showName: include who borrowed it (project/Borrowed-now lists).
+  function historyRowHtml(rec, showName) {
+    const when = shortDate(rec.time);
+    const pendingBorrow = rec.caseType === 'BORROWING' && !rec.resolved;
+    const caseLabel = rec.caseType === 'CONSUMING' ? 'Used up' : (rec.resolved ? 'Returned' : (rec.overdue ? 'Overdue' : 'Borrowed'));
+    const caseClass = rec.resolved ? 'resolved' : (rec.overdue ? 'overdue' : 'pending');
+    const dueNote = pendingBorrow && rec.due ? `<div class="history-item-date${rec.overdue ? ' overdue' : ''}">Due ${shortDate(rec.due)}</div>` : `<div class="history-item-date">${when}</div>`;
+    const resolveBtn = pendingBorrow && canResolve(rec)
+      ? `<button type="button" class="resolve-btn" onclick="resolveLine('${escapeAttr(rec.lineId)}', this)">Mark returned</button>`
+      : '';
     return `
-      <div class="history-item">
+      <div class="history-item${rec.overdue ? ' is-overdue' : ''}">
         <div class="history-item-main">
           <div class="history-item-title">${escapeHtml(rec.item)}${rec.qty ? ' × ' + escapeHtml(rec.qty) : ''}</div>
-          <div class="history-item-meta">${escapeHtml(rec.project || '—')}${rec.committee ? ' · ' + escapeHtml(rec.committee) : ''}${state.historyTab === 'project' && rec.name ? ' · ' + escapeHtml(rec.name) : ''}</div>
+          <div class="history-item-meta">${escapeHtml(rec.project || '—')}${(showName || state.historyTab === 'project') && rec.name ? ' · ' + escapeHtml(rec.name) : ''}${rec.committee ? ' · ' + escapeHtml(rec.committee) : ''}</div>
+          ${resolveBtn}
         </div>
         <div class="history-item-side">
-          <div class="history-item-case ${rec.resolved ? 'resolved' : 'pending'}">${caseLabel}</div>
-          <div class="history-item-date">${when}</div>
+          <div class="history-item-case ${caseClass}">${caseLabel}</div>
+          ${dueNote}
         </div>
       </div>`;
+  }
+
+  /* ---------------- Acting for a project / department ----------------
+     Every borrow or use-up is logged under a project or department, never
+     personally. The list comes from login: the member's own department plus
+     any project they're a core of (CORES tab). Officers get '*' = anything. */
+  const ACTING_AS_KEY = 'cela_acting_as';
+
+  function getSavedActingAs() {
+    try { return localStorage.getItem(ACTING_AS_KEY) || ''; } catch(e) { return ''; }
+  }
+
+  function setActingAs(value) {
+    state.actingAs = value || '';
+    try { localStorage.setItem(ACTING_AS_KEY, state.actingAs); } catch(e) {}
+    renderActForSelects();
+  }
+
+  function sameName(a, b) {
+    return String(a || '').toLowerCase().replace(/[^a-z0-9]/g, '') === String(b || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+  }
+
+  function allowedTargets() {
+    const actFor = (state.lastId && Array.isArray(state.lastId.actFor)) ? state.lastId.actFor : [];
+    if (actFor.includes('*')) return state.projectOptions.slice();
+    return actFor.slice();
+  }
+
+  function canActFor(project) {
+    const actFor = (state.lastId && Array.isArray(state.lastId.actFor)) ? state.lastId.actFor : [];
+    return actFor.includes('*') || actFor.some(a => sameName(a, project));
+  }
+
+  function canResolve(rec) {
+    if (!rec.lineId || !state.lastId) return false;
+    return String(rec.idNum).trim() === String(state.lastId.idNumber).trim() || canActFor(rec.project);
+  }
+
+  function renderActForSelects() {
+    const targets = allowedTargets();
+    if (!targets.some(t => t === state.actingAs)) state.actingAs = targets[0] || '';
+    const html = targets.length
+      ? targets.map(t => `<option value="${escapeHtml(t)}"${t === state.actingAs ? ' selected' : ''}>${escapeHtml(t)}</option>`).join('')
+      : '<option value="">Not linked to a department or project</option>';
+    ['home-actfor-select', 'project-select'].forEach(id => {
+      const el = document.getElementById(id);
+      if (!el) return;
+      el.innerHTML = html;
+      el.disabled = !targets.length;
+    });
+    const note = document.getElementById('actfor-empty-note');
+    if (note) note.style.display = targets.length ? 'none' : '';
+  }
+
+  async function refreshLoginInBackground() {
+    if (!navigator.onLine || !state.lastId || !getInventoryScriptUrl()) return;
+    const fresh = await fetchIdLookup(state.lastId.idNumber);
+    if (!fresh.found || !state.lastId || fresh.idNumber !== state.lastId.idNumber) return;
+    state.lastId = fresh;
+    saveLogin(fresh);
+    renderIdentity();
+    renderActForSelects();
+  }
+
+  async function resolveLine(lineId, btn) {
+    const url = getInventoryScriptUrl();
+    if (!url || !navigator.onLine) { showToast('You need to be online to mark items returned', true); return; }
+    if (btn) { btn.disabled = true; btn.textContent = 'Saving…'; }
+    try {
+      const token = getInventoryToken();
+      const res = await fetch(url + '?action=resolve', {
+        method: 'POST',
+        headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+        body: JSON.stringify(Object.assign({ idNumber: state.lastId.idNumber, lineId }, token ? { token } : {}))
+      });
+      const json = await res.json();
+      if (!json || !json.ok) throw new Error((json && json.error) || 'Could not mark returned');
+      showToast('Marked returned');
+      if (state.view === 'out') renderOut(); else renderHistory();
+      loadInventory();
+    } catch(err) {
+      showToast(err.message, true);
+      if (btn) { btn.disabled = false; btn.textContent = 'Mark returned'; }
+    }
+  }
+  window.resolveLine = resolveLine;
+
+  /* ---------------- Borrowed now ----------------
+     Everything still out of the org room, grouped by project/department,
+     overdue first. Same data as History (action=history), so it also works
+     from the offline cache. */
+  function pendingBorrows(records) {
+    return records.filter(r => r.caseType === 'BORROWING' && !r.resolved);
+  }
+
+  async function updateOutCount() {
+    const sub = document.getElementById('out-sub');
+    if (!sub) return;
+    const { records } = await fetchHistoryRecords();
+    const pending = pendingBorrows(records);
+    const overdue = pending.filter(r => r.overdue).length;
+    sub.textContent = pending.length
+      ? pending.length + (pending.length === 1 ? ' item' : ' items') + ' out' + (overdue ? ' · ' + overdue + ' overdue' : '')
+      : 'Nothing is out right now';
+    sub.classList.toggle('overdue', overdue > 0);
+  }
+
+  let outLoadToken = 0;
+  async function renderOut() {
+    const list = document.getElementById('out-list');
+    if (!list) return;
+    document.querySelectorAll('#out-filter .category-chip').forEach(b => b.classList.toggle('active', b.dataset.filter === state.outFilter));
+    const myToken = ++outLoadToken;
+    list.innerHTML = '<div class="history-item skeleton-row skeleton" style="height:52px;"></div>'.repeat(3);
+
+    const { records, offline, syncedAt } = await fetchHistoryRecords();
+    if (myToken !== outLoadToken) return;
+
+    let pending = pendingBorrows(records);
+    if (state.outFilter === 'mine') {
+      const myId = String(state.lastId && state.lastId.idNumber || '').trim();
+      const actFor = (state.lastId && state.lastId.actFor) || [];
+      // Officers can act for everything, so "mine" means their own borrows only.
+      pending = pending.filter(r => String(r.idNum).trim() === myId || (!actFor.includes('*') && canActFor(r.project)));
+    }
+    pending.sort((a, b) => (b.overdue - a.overdue) || String(a.due).localeCompare(String(b.due)));
+
+    const groups = {};
+    pending.forEach(r => { (groups[r.project || '—'] = groups[r.project || '—'] || []).push(r); });
+
+    const offlineNote = offline
+      ? `<div class="history-offline-note"><img class="svg-icon icon-inline" src="icons/ui/wifi.svg" alt="">Showing ${syncedAt ? 'data from ' + new Date(syncedAt).toLocaleString() : 'no saved data'}.</div>`
+      : '';
+    list.innerHTML = offlineNote + (pending.length
+      ? Object.keys(groups).map(project => `
+          <div class="history-section-label">${escapeHtml(project)} <span class="out-group-count">${groups[project].length}</span></div>
+          <div class="history-list">${groups[project].map(r => historyRowHtml(r, true)).join('')}</div>`).join('')
+      : `<div class="history-empty">${state.outFilter === 'mine' ? 'Nothing borrowed by you or your projects' : 'Nothing is out of the org room'}</div>`);
   }
 
   let historyLoadToken = 0;
@@ -728,7 +857,7 @@
         totalList.innerHTML = '<div class="history-empty">Select a Project/Dept above</div>';
         return;
       }
-      scoped = records.filter(r => r.project === chosen);
+      scoped = records.filter(r => sameName(r.project, chosen));
     }
 
     const pending = scoped.filter(r => !r.resolved);
@@ -754,34 +883,12 @@
 
   /* ---------------- Home (page 1 layout) ---------------- */
 
-  const TRACKER_CFG_KEY = 'mea_cfg2';           // same localStorage key the ID Tracker reads
-  const INVENTORY_URL_KEY = 'mea_inventory_url'; // separate key — different spreadsheet, different script
+  const INVENTORY_URL_KEY = 'cela_inventory_url';
 
-  // Default Apps Script URLs — pre-fill the Setup panel and unlock the app
-  // automatically on first load. Still fully editable at any time.
-  const DEFAULT_TRACKER_URL = 'https://script.google.com/macros/s/AKfycbzWJgA5ZJBER5Tmcc-F-lE4XnuFvqXigvUly-TffEpqS7djIxdo5kHuvCvS9sJm3R8o/exec';
-  const DEFAULT_INVENTORY_URL = 'https://script.google.com/macros/s/AKfycbw7gPEvtVG_kciag2BSrGEymUL7wTWtGZS8yemKKRTAVv922PyxaArmLOxsUGWyBD-9Ng/exec';
-
-  function getTrackerScriptUrl() {
-    try {
-      const raw = localStorage.getItem(TRACKER_CFG_KEY);
-      if (!raw) return '';
-      const parsed = JSON.parse(raw);
-      return (parsed && parsed.url) ? parsed.url.trim() : '';
-    } catch(e) { return ''; }
-  }
-
-  function saveTrackerScriptUrl(url) {
-    let cfg = {};
-    try {
-      const raw = localStorage.getItem(TRACKER_CFG_KEY);
-      if (raw) cfg = JSON.parse(raw) || {};
-    } catch(e) {}
-    cfg.url = url;
-    if (!cfg.cols) cfg.cols = { INVENTORY: 'A', 'W/Proj': 'A', DEPLOYED: 'A' };
-    if (!cfg.cooldown) cfg.cooldown = 3;
-    localStorage.setItem(TRACKER_CFG_KEY, JSON.stringify(cfg));
-  }
+  // Default Apps Script URL — pre-fills Settings and unlocks the app on first
+  // load. Paste the /exec URL of the Celadon Inventory deployment here
+  // (see SETUP.md). Still editable at any time from Settings.
+  const DEFAULT_INVENTORY_URL = '';
 
   function getInventoryScriptUrl() {
     try {
@@ -793,7 +900,7 @@
     localStorage.setItem(INVENTORY_URL_KEY, url);
   }
 
-  const INVENTORY_TOKEN_KEY = 'mea_inventory_token';
+  const INVENTORY_TOKEN_KEY = 'cela_inventory_token';
 
   function getInventoryToken() {
     try { return (localStorage.getItem(INVENTORY_TOKEN_KEY) || '').trim(); } catch(e) { return ''; }
@@ -803,14 +910,11 @@
     try { localStorage.setItem(INVENTORY_TOKEN_KEY, token || ''); } catch(e) {}
   }
 
-  // Seeds both URLs with their defaults the very first time the app runs on
-  // a device, without ever overwriting a URL the person has already saved
+  // Seeds the URL with its default the very first time the app runs on a
+  // device, without ever overwriting a URL the person has already saved
   // (their own edits — including clearing it back to blank — always win).
   function seedDefaultScriptUrls() {
-    if (localStorage.getItem(TRACKER_CFG_KEY) === null) {
-      saveTrackerScriptUrl(DEFAULT_TRACKER_URL);
-    }
-    if (localStorage.getItem(INVENTORY_URL_KEY) === null) {
+    if (DEFAULT_INVENTORY_URL && localStorage.getItem(INVENTORY_URL_KEY) === null) {
       saveInventoryScriptUrl(DEFAULT_INVENTORY_URL);
     }
   }
@@ -844,7 +948,7 @@
       btn.textContent = 'ENTER';
 
       if (result.status === 'NOT_CONFIGURED') {
-        err.textContent = 'ID Tracker isn\'t set up yet — contact an admin.';
+        err.textContent = 'The app isn\'t connected to the inventory sheet yet — contact an officer.';
         return;
       }
       if (result.status === 'NETWORK_ERROR') {
@@ -856,13 +960,15 @@
         return;
       }
       if (!result.found) {
-        err.textContent = 'ID number not recognized.';
+        err.textContent = 'ID number not found in the Celadon member list.';
         return;
       }
 
       state.lastId = result;
       saveLogin(result);
+      state.actingAs = getSavedActingAs();
       renderIdentity();
+      renderActForSelects();
       input.value = '';
       showView('home');
     }
@@ -889,26 +995,12 @@
       historyProjectSelect.addEventListener('change', () => renderHistory());
     }
 
-    document.getElementById('home-nav-idtracker').addEventListener('click', () => {
-      if (!getTrackerScriptUrl()) {
-        showToast('ID Tracker isn\'t set up yet — contact an admin', true);
-        return;
-      }
-      if (!canOpenTracker(state.lastId)) {
-        showToast('You don\'t have permission to open ID Tracker', true);
-        return;
-      }
-      // The tracker stays in its original, self-contained document so its
-      // NFC, settings, saved IDs, and Google Sheets behavior are untouched.
-      window.location.href = 'id-tracker.html?id=' + encodeURIComponent(state.lastId.idNumber);
+    document.getElementById('home-nav-out').addEventListener('click', () => showView('out'));
+    document.querySelectorAll('#out-filter .category-chip').forEach(btn => {
+      btn.addEventListener('click', () => { state.outFilter = btn.dataset.filter; renderOut(); });
     });
-
-    document.getElementById('home-nav-dashboard').addEventListener('click', () => {
-      if (!canOpenDashboard(state.lastId)) {
-        showToast('You don\'t have permission to open SUS Dashboard', true);
-        return;
-      }
-      showView('dashboard');
+    ['home-actfor-select', 'project-select'].forEach(id => {
+      document.getElementById(id).addEventListener('change', e => setActingAs(e.target.value));
     });
 
     const logoBtn = document.getElementById('logo-home-btn');
@@ -921,25 +1013,20 @@
     document.getElementById('settings-install-btn').addEventListener('click', () => triggerInstall());
 
     document.getElementById('settings-save-btn').addEventListener('click', () => {
-      const trackerUrl = document.getElementById('settings-script-url').value.trim();
-      const trackerToken = document.getElementById('settings-tracker-token').value.trim();
       const inventoryUrl = document.getElementById('settings-inventory-url').value.trim();
       const inventoryToken = document.getElementById('settings-inventory-token').value.trim();
       const status = document.getElementById('settingsStatus');
 
-      if (!trackerUrl && !inventoryUrl) {
-        status.textContent = 'Enter at least one Apps Script URL.';
+      if (!inventoryUrl) {
+        status.textContent = 'Enter the Inventory Apps Script URL.';
         status.className = 'setup-status error';
         return;
       }
-      if (trackerUrl) saveTrackerScriptUrl(trackerUrl);
-      saveTrackerToken(trackerToken);
-      if (inventoryUrl) saveInventoryScriptUrl(inventoryUrl);
+      saveInventoryScriptUrl(inventoryUrl);
       saveInventoryToken(inventoryToken);
 
       status.textContent = 'Saved!';
       status.className = 'setup-status ok';
-      updateHomeCardStates();
       loadInventory(); // refresh right away so Catalog isn't stuck on stale/demo data
     });
 
@@ -1014,21 +1101,14 @@
   function loadProjectOptions() {
     google.script.run
       .withSuccessHandler(options => {
-        // Keep required client-side options available even when an older
-        // Apps Script deployment returns its own, incomplete list.
-        const liveOptions = Array.isArray(options) ? options : [];
-        state.projectOptions = Array.from(new Set([...liveOptions, 'COMEALEC']));
-        const select = document.getElementById('project-select');
-        select.innerHTML = state.projectOptions
-          .map(opt => `<option value="${escapeHtml(opt)}">${escapeHtml(opt)}</option>`)
-          .join('');
+        state.projectOptions = Array.isArray(options) ? options.filter(o => !/^personal$/i.test(o)) : [];
+        renderActForSelects();
 
         const historySelect = document.getElementById('history-project-select');
         if (historySelect) {
           const placeholder = historySelect.querySelector('option[value=""]');
           historySelect.innerHTML = (placeholder ? placeholder.outerHTML : '<option value="">Project/Dept</option>') +
             state.projectOptions
-              .filter(opt => opt !== 'Personal')
               .map(opt => `<option value="${escapeHtml(opt)}">${escapeHtml(opt)}</option>`)
               .join('');
         }
@@ -1101,7 +1181,7 @@
 
   function renderCatalog() {
     const container = document.getElementById('catalog-container');
-    const debugMsg = window.__meaInventoryDebugError;
+    const debugMsg = window.__celaInventoryDebugError;
     const debugHtml = debugMsg
       ? `<div style="grid-column:1/-1;background:rgba(255,107,107,0.08);border:1px solid rgba(255,107,107,0.3);border-radius:12px;padding:14px;font-size:11px;font-family:monospace;color:#ffb3b3;white-space:pre-wrap;word-break:break-word;margin-bottom:10px;"><img class="svg-icon icon-inline" src="icons/ui/warning.svg" alt="">Inventory fetch failed — showing demo items below.\n\n${escapeHtml(debugMsg)}</div>`
       : '';
@@ -1140,7 +1220,7 @@
         <div class="item-card" onclick="addToCart('${escapeAttr(item.id)}')">
           <div class="item-thumb">${locationTag(item.location)}</div>
           <div class="item-title">${escapeHtml(item.title)}</div>
-          <div class="item-qty">${escapeHtml(item.qtyDisplay != null ? item.qtyDisplay : item.qtyAvailable)}</div>
+          <div class="item-qty">${escapeHtml(item.qtyDisplay != null ? item.qtyDisplay : item.qtyAvailable)}${item.out ? ` <span class="out-badge">${item.out} out</span>` : ''}</div>
         </div>
       `).join('');
     } else {
@@ -1149,8 +1229,8 @@
         <div class="item-row" onclick="addToCart('${escapeAttr(item.id)}')">
           <div class="item-thumb">${locationTag(item.location)}</div>
           <div class="item-info">
-            <div class="item-title">${escapeHtml(item.title)}</div>
-            <div class="item-qty">${item.notes ? escapeHtml(item.notes) : '<span style="opacity:0.5">No notes</span>'}</div>
+            <div class="item-title">${escapeHtml(item.title)}${item.out ? ` <span class="out-badge">${item.out} out</span>` : ''}</div>
+            <div class="item-qty">${escapeHtml(item.qtyDisplay || '—')} in sheet${item.notes ? ' · ' + escapeHtml(item.notes) : ''}</div>
           </div>
           ${cartQty(item.id) > 0 ? `<div class="in-cart-badge">${cartQty(item.id)} in cart</div>` : ''}
         </div>
@@ -1256,18 +1336,16 @@
   /* ---------------- Checkout view ---------------- */
 
   const CASE_HINTS = {
-    BORROWING: 'Comment the quantity to be borrowed, project/department, and point person on the quantity column of the item.',
-    CONSUMING: 'Comment the quantity to be consumed, project/department, and point person on the quantity column of the item.',
-    RETURNING: 'Resolve your comment on the quantity column once borrowed materials have been returned.'
+    BORROWING: 'Borrowing: taking items out of the org room for the project/department above. They stay under it until someone from it marks them returned.',
+    CONSUMING: 'Using up: supplies that won\'t come back (e.g. tape, paper). The quantity is deducted from the sheet and charged to the project/department above.',
+    RETURNING: 'Returning: bringing back items the project/department above borrowed. Clears its pending borrows. You can also tap "Mark returned" in Borrowed now.'
   };
 
   function renderCheckout() {
     document.getElementById('checkout-id-display').textContent =
       state.lastId && state.lastId.idNumber ? state.lastId.idNumber : 'Not scanned yet';
 
-    if (state.lastId && state.lastId.committee) {
-      document.getElementById('committee-input').value = state.lastId.committee;
-    }
+    renderActForSelects();
 
     const entries = Object.values(state.cart);
     const tbody = document.getElementById('checkout-summary-body');
@@ -1296,7 +1374,7 @@
   function submitOrder() {
     const entries = Object.values(state.cart);
     if (!state.lastId || !state.lastId.idNumber) {
-      showToast('Enter your ID number on the Home page first', true);
+      showToast('Log in with your ID number first', true);
       showView('home');
       return;
     }
@@ -1307,11 +1385,16 @@
 
     const committee = document.getElementById('committee-input').value;
     const project = document.getElementById('project-select').value;
+    if (!project) {
+      showToast('Choose the project or department this is for', true);
+      return;
+    }
     const pointPerson = (state.lastId && state.lastId.name) ? state.lastId.name : state.lastId.idNumber;
 
     const payload = {
       idNumber: state.lastId.idNumber,
       caseType: state.checkoutCase, // BORROWING | CONSUMING | RETURNING
+      actingAs: project, // required: the project/department accountable for these items
       project: project,
       committee: committee,
       items: entries.map(({ item, qty }) => ({
@@ -1319,8 +1402,8 @@
         title: item.title,
         qty: qty,
         location: item.location || '',
-        // Matches the sheet's own comment convention, e.g. "[BORROWING] - 24 ACTS, Renzo Gutierrez"
-        comment: `[${state.checkoutCase}] - ${qty} ${committee || project}, ${pointPerson}`
+        // Note left on the item's quantity cell, e.g. "[BORROWING] - 2 MAF, Juan Dela Cruz"
+        comment: `[${state.checkoutCase}] - ${qty} ${project}, ${pointPerson}`
       }))
     };
 
@@ -1333,18 +1416,18 @@
         if (result && result.queued) {
           showToast('Saved offline — will sync automatically');
         } else {
-          showToast('Order submitted');
+          showToast('Request submitted');
         }
         state.cart = {};
         updateCartBadge();
         btn.disabled = false;
-        btn.textContent = 'SUBMIT ORDER';
+        btn.textContent = 'SUBMIT REQUEST';
         showView('home');
       })
       .withFailureHandler(err => {
-        showToast(err.message || 'Could not submit order', true);
+        showToast(err.message || 'Could not submit request', true);
         btn.disabled = false;
-        btn.textContent = 'SUBMIT ORDER';
+        btn.textContent = 'SUBMIT REQUEST';
       })
       .submitOrder(payload);
   }
@@ -1352,11 +1435,10 @@
   /* ---------------- Contacts (shared by the Help view and the Contact modal) ----------------
      Single source of truth so editing the team roster only ever means
      touching one array instead of two identical hand-written HTML blocks. */
+  // TODO: replace with Celadon's inventory point people before launch.
+  // Leave telegram blank ('') to hide that button for a person.
   const CONTACTS = [
-    { name: 'David Yu',      role: 'SUS Senior Associate', messenger: 'https://fb.com/davidcurtisyu',        telegram: 'https://t.me/davidcurtisyu' },
-    { name: 'Kendrick Jin',  role: 'SUS Senior Associate', messenger: 'https://www.fb.com/ken.jin/',          telegram: 'https://t.me/dkrypto' },
-    { name: 'Riesha Chan',   role: 'SUS AVP',               messenger: 'https://www.facebook.com/rieeschann', telegram: 'https://t.me/rchchan' },
-    { name: 'Hazel Burce',   role: 'VP SUS',                messenger: 'https://www.facebook.com/hazelburce25', telegram: 'https://t.me/hazelburce25' }
+    { name: 'Ateneo Celadon', role: 'Official page', messenger: 'https://m.me/celadonateneo', telegram: '' }
   ];
 
   function contactRowHtml(c) {
@@ -1368,7 +1450,7 @@
         </div>
         <div class="contact-btn-group">
           <button class="contact-icon-btn" title="Message ${escapeAttr(c.name)} on Messenger" aria-label="Message ${escapeAttr(c.name)} on Messenger" onclick="window.open('${c.messenger}', '_blank', 'noopener')"><img class="svg-icon" src="icons/ui/messenger.svg" alt=""></button>
-          <button class="contact-icon-btn" title="Message ${escapeAttr(c.name)} on Telegram" aria-label="Message ${escapeAttr(c.name)} on Telegram" onclick="window.open('${c.telegram}', '_blank', 'noopener')"><img class="svg-icon" src="icons/ui/telegram.svg" alt=""></button>
+          ${c.telegram ? `<button class="contact-icon-btn" title="Message ${escapeAttr(c.name)} on Telegram" aria-label="Message ${escapeAttr(c.name)} on Telegram" onclick="window.open('${c.telegram}', '_blank', 'noopener')"><img class="svg-icon" src="icons/ui/telegram.svg" alt=""></button>` : ''}
         </div>
       </div>`;
   }
@@ -1405,7 +1487,7 @@
   });
 
   window.addEventListener('appinstalled', () => {
-    showToast('MEA App installed!');
+    showToast('Celadon app installed!');
     hideInstallBanner();
   });
 
@@ -1417,7 +1499,7 @@
     deferredInstallPrompt.prompt();
     const choice = await deferredInstallPrompt.userChoice;
     if (choice.outcome === 'accepted') {
-      showToast('Installing MEA App…');
+      showToast('Installing Celadon app…');
       hideInstallBanner();
     }
     deferredInstallPrompt = null;
@@ -1431,7 +1513,7 @@
      manual step there with no programmatic trigger). Dismissing snoozes
      the banner for 14 days rather than hiding it forever, since people
      often dismiss the first time they see anything new. */
-  const INSTALL_DISMISS_KEY = 'mea_install_banner_dismissed_at';
+  const INSTALL_DISMISS_KEY = 'cela_install_banner_dismissed_at';
   const INSTALL_SNOOZE_MS = 14 * 24 * 60 * 60 * 1000;
 
   function isStandalonePwa() {
@@ -1500,17 +1582,18 @@
 
   /* ---------------- Utils ---------------- */
 
-  // A curated set of colors that all sit comfortably on the app's dark teal
+  // A curated set of colors that all sit comfortably on the app's dark navy
   // background and stay readable with white text — used to give every
   // distinct storage location its own consistent, recognizable color.
+  // Leans on Celadon's site accents (jade, crimson, gold).
   const LOCATION_PALETTE = [
-    '#1a6b6b', '#2a5d9d', '#6b4fa0', '#9d3f6b', '#a05a2a',
-    '#5c7a2a', '#2a9d6e', '#4a4a9d', '#9d6b2a', '#2a7d9d',
-    '#7a3f9d', '#3f9d5a'
+    '#3d5a96', '#579782', '#970708', '#b2620e', '#6b4fa0',
+    '#2a7d9d', '#9d3f6b', '#5c7a2a', '#8a6a0b', '#4a4a9d',
+    '#1b6b5a', '#a04a2a'
   ];
 
   function locationColor(location) {
-    if (!location) return '#3a4a52'; // neutral slate for unassigned items
+    if (!location) return '#3a4560'; // neutral slate for unassigned items
     let hash = 0;
     for (let i = 0; i < location.length; i++) {
       hash = (hash * 31 + location.charCodeAt(i)) >>> 0;
@@ -1531,22 +1614,4 @@
   }
   function escapeAttr(str) {
     return String(str).replace(/'/g, "\\'");
-  }
-
-  function getTrackerToken() {
-    try {
-      const raw = localStorage.getItem(TRACKER_CFG_KEY);
-      const parsed = raw ? JSON.parse(raw) : {};
-      return (parsed && parsed.token) ? String(parsed.token).trim() : '';
-    } catch(e) { return ''; }
-  }
-
-  function saveTrackerToken(token) {
-    let cfg = {};
-    try {
-      const raw = localStorage.getItem(TRACKER_CFG_KEY);
-      if (raw) cfg = JSON.parse(raw) || {};
-    } catch(e) {}
-    cfg.token = token || '';
-    localStorage.setItem(TRACKER_CFG_KEY, JSON.stringify(cfg));
   }

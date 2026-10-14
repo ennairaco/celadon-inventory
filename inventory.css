@@ -1,5 +1,5 @@
 /* ═══════════════════════════════════════════════════════════
-   MEA Inventory — styled to match MEA ID Tracker's design system
+   Celadon Inventory — Ateneo Celadon navy + orange (ateneoceladon.com)
    ═══════════════════════════════════════════════════════════ */
 
 *, *::before, *::after {
@@ -8,14 +8,14 @@
 }
 
 :root {
-  --teal-deep:   #0a3535;
-  --teal-dark:   #0d4444;
-  --teal-mid:    #1a6b6b;
-  --teal-bright: #2a9d9d;
-  --teal-light:  #4dc4c4;
-  --teal-pale:   #e0f5f5;
+  --cela-deep:   #001a45;
+  --cela-dark:   #002560;
+  --cela-mid:    #003078;
+  --cela-bright: #3d5a96;
+  --cela-accent: #f09b43;
+  --cela-pale:   #eef2f8;
   --white:       #ffffff;
-  --off-white:   #f0fafa;
+  --off-white:   #f4f6fa;
   --text-dim:    rgba(255,255,255,0.55);
   --text-faint:  rgba(255,255,255,0.3);
   --border-dark: rgba(255,255,255,0.1);
@@ -29,7 +29,7 @@
   --radius-lg: 20px;
   --radius-md: 14px;
   --radius-sm: 10px;
-  --sans: 'Plus Jakarta Sans', 'Inter', sans-serif;
+  --sans: 'Montserrat', Arial, Helvetica, sans-serif;
 
   /* Spacing scale — used by newer components; older hand-tuned rules are
      left as-is rather than churned for the sake of it. */
@@ -41,13 +41,13 @@
   --space-6: 24px;
   --space-8: 32px;
 
-  /* Shadows tinted with the app's own teal hue instead of flat black,
+  /* Shadows tinted with the app's own navy hue instead of flat black,
      so elevation reads as part of the same lighting environment. */
-  --shadow-sm: 0 2px 10px rgba(3,20,20,0.35);
-  --shadow-md: 0 10px 28px rgba(2,16,16,0.45);
-  --shadow-lg: 0 22px 60px rgba(2,14,14,0.55);
+  --shadow-sm: 0 2px 10px rgba(0,10,30,0.35);
+  --shadow-md: 0 10px 28px rgba(0,8,24,0.45);
+  --shadow-lg: 0 22px 60px rgba(0,6,20,0.55);
 
-  --focus-ring: 0 0 0 3px rgba(77,196,196,0.45);
+  --focus-ring: 0 0 0 3px rgba(240,155,67,0.45);
 
   --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
 }
@@ -55,7 +55,7 @@
 html, body {
   min-height: 100vh;
   font-family: var(--sans);
-  background: var(--teal-deep);
+  background: var(--cela-deep);
   color: var(--white);
   overscroll-behavior: none;
   -webkit-font-smoothing: antialiased;
@@ -131,9 +131,9 @@ body::before {
   content: '';
   position: fixed; inset: 0;
   background:
-    radial-gradient(ellipse at 80% 10%, #2a9d8820 0%, transparent 55%),
-    radial-gradient(ellipse at 10% 90%, #0a353580 0%, transparent 60%),
-    linear-gradient(145deg, #0d5050 0%, #0a3535 50%, #081e2e 100%);
+    radial-gradient(ellipse at 80% 10%, #f09b4320 0%, transparent 55%),
+    radial-gradient(ellipse at 10% 90%, #001a4580 0%, transparent 60%),
+    linear-gradient(145deg, #003078 0%, #001a45 50%, #000f2e 100%);
   pointer-events: none;
   z-index: 0;
 }
@@ -150,19 +150,19 @@ body::before {
 }
 
 /* ── Header ── */
-.mea-header {
+.cela-header {
   display: flex;
   align-items: center;
   gap: 11px;
   padding: calc(14px + env(safe-area-inset-top)) 18px 14px;
-  background: rgba(10,53,53,0.85);
+  background: rgba(0,26,69,0.85);
   backdrop-filter: blur(12px);
   -webkit-backdrop-filter: blur(12px);
   border-bottom: 1px solid var(--border-dark);
   position: sticky; top: 0; z-index: 100;
 }
 
-.mea-logo-chip {
+.cela-logo-chip {
   width: 38px; height: 38px;
   border-radius: 10px;
   overflow: hidden;
@@ -170,26 +170,26 @@ body::before {
   flex-shrink: 0;
   cursor: pointer;
 }
-.mea-logo-chip img { width: 100%; height: 100%; object-fit: cover; }
+.cela-logo-chip img { width: 100%; height: 100%; object-fit: cover; }
 
-.mea-header-titles { flex: 1; min-width: 0; }
-.mea-header-titles h1 {
+.cela-header-titles { flex: 1; min-width: 0; }
+.cela-header-titles h1 {
   font-size: 15px;
   font-weight: 800;
   letter-spacing: 0.2px;
   color: var(--white);
   line-height: 1.25;
 }
-.mea-header-titles p {
+.cela-header-titles p {
   font-size: 10px;
-  color: var(--teal-light);
+  color: var(--cela-accent);
   font-weight: 500;
   letter-spacing: 0.8px;
   text-transform: uppercase;
   margin-top: 1px;
 }
 
-.mea-header-actions { display: flex; align-items: center; gap: 8px; }
+.cela-header-actions { display: flex; align-items: center; gap: 8px; }
 
 .icon-btn {
   width: 36px; height: 36px;
@@ -204,7 +204,7 @@ body::before {
   position: relative;
 }
 .icon-btn:active { background: var(--surface-hi); }
-.icon-btn.active { background: rgba(77,196,196,0.2); border-color: var(--teal-light); }
+.icon-btn.active { background: rgba(240,155,67,0.2); border-color: var(--cela-accent); }
 
 .svg-icon, .nav-svg-icon, .scan-svg-icon, .home-nav-icon .svg-icon, .item-thumb .svg-icon, .empty-state .svg-icon {
     display: block;
@@ -221,8 +221,8 @@ body::before {
 
 .cart-badge {
   position: absolute; top: -6px; right: -6px;
-  background: var(--teal-bright);
-  color: var(--teal-deep);
+  background: var(--cela-bright);
+  color: var(--cela-deep);
   font-size: 10px; font-weight: 800;
   min-width: 17px; height: 17px;
   border-radius: 9px;
@@ -231,13 +231,13 @@ body::before {
 }
 
 /* ── Tabs (unused in inventory pages, kept for compatibility) ── */
-.mea-tabs {
+.cela-tabs {
   display: grid;
   grid-template-columns: 1fr 1fr 1fr;
-  background: rgba(10,40,40,0.6);
+  background: rgba(0,20,55,0.6);
   border-bottom: 1px solid var(--border-dark);
 }
-.mea-tab {
+.cela-tab {
   padding: 11px 4px 9px;
   text-align: center;
   cursor: pointer;
@@ -246,12 +246,12 @@ body::before {
   letter-spacing: 0.8px; text-transform: uppercase;
   position: relative;
 }
-.mea-tab .tab-main { display: block; }
-.mea-tab .tab-sub { display: block; font-size: 9px; font-weight: 500; margin-top: 2px; opacity: 0.7; }
-.mea-tab.active { color: var(--teal-light); }
-.mea-tab.active::after {
+.cela-tab .tab-main { display: block; }
+.cela-tab .tab-sub { display: block; font-size: 9px; font-weight: 500; margin-top: 2px; opacity: 0.7; }
+.cela-tab.active { color: var(--cela-accent); }
+.cela-tab.active::after {
   content: ''; position: absolute; bottom: -1px; left: 0; right: 0;
-  height: 2px; background: var(--teal-light);
+  height: 2px; background: var(--cela-accent);
 }
 
 /* ── Views ── */
@@ -280,8 +280,8 @@ body::before {
   justify-content: space-between;
   padding: calc(24px + env(safe-area-inset-top)) 20px 0;
 }
-.top-brand-mea { height: 50px; width: auto; }
-.top-brand-sus { height: 44px; width: auto; }
+.top-brand-mark { height: 50px; width: auto; }
+.top-brand-word { height: 30px; width: auto; }
 
 /* ── Identity block (Home / Settings / Help) ── */
 .identity-block {
@@ -404,7 +404,9 @@ body::before {
   padding: max(18vh, calc(64px + env(safe-area-inset-top))) 24px 0;
   text-align: center;
 }
-.login-logo img { max-width: min(380px, 90%); width: 100%; height: auto; }
+.login-logo { display: flex; flex-direction: column; align-items: center; gap: 18px; }
+.login-logo .login-mark { width: 168px; height: auto; }
+.login-tagline { margin-top: 14px; font-weight: 600; font-size: 12px; color: var(--text-dim); letter-spacing: 0.3px; }
 .login-enter-btn { width: 100%; max-width: 320px; }
 .login-error {
   min-height: 16px;
@@ -454,13 +456,13 @@ body::before {
   transition: border-color 0.15s, background 0.15s;
 }
 .id-input-row input::placeholder { color: var(--text-faint); font-weight: 500; }
-.id-input-row input:focus { border-color: var(--teal-bright); background: rgba(255,255,255,0.1); }
+.id-input-row input:focus { border-color: var(--cela-bright); background: rgba(255,255,255,0.1); }
 
 .id-input-row button {
   width: 52px;
   border-radius: var(--radius-md);
   border: none;
-  background: linear-gradient(135deg, var(--teal-mid), var(--teal-bright));
+  background: linear-gradient(135deg, var(--cela-mid), var(--cela-bright));
   color: var(--white);
   font-size: 18px; font-weight: 800;
   cursor: pointer;
@@ -492,7 +494,7 @@ body::before {
 .home-nav-icon {
   width: 46px; height: 46px;
   border-radius: 12px;
-  background: rgba(77,196,196,0.15);
+  background: rgba(240,155,67,0.15);
   display: flex; align-items: center; justify-content: center;
   font-size: 21px;
   flex-shrink: 0;
@@ -500,7 +502,7 @@ body::before {
 .home-nav-text { flex: 1; min-width: 0; width: auto; }
 .home-nav-title { font-size: 14px; font-weight: 800; letter-spacing: 0.3px; }
 .home-nav-sub { font-size: 11px; color: var(--text-dim); margin-top: 2px; }
-.home-nav-chevron { font-size: 20px; color: var(--teal-light); flex-shrink: 0; }
+.home-nav-chevron { font-size: 20px; color: var(--cela-accent); flex-shrink: 0; }
 .home-nav-chevron { display: none; }
 
 /* Lists with a single card (e.g. Settings' Download App) keep the original
@@ -509,7 +511,7 @@ body::before {
 .home-nav-list-single .home-nav-card { flex-direction: row; align-items: center; gap: 14px; }
 .home-nav-list-single .home-nav-text { width: auto; }
 .home-nav-list-single .home-nav-sub { display: block; }
-.home-nav-list-single .home-nav-chevron { display: block; font-size: 20px; color: var(--teal-light); flex-shrink: 0; }
+.home-nav-list-single .home-nav-chevron { display: block; font-size: 20px; color: var(--cela-accent); flex-shrink: 0; }
 
 .home-footnote {
   text-align: center;
@@ -553,7 +555,7 @@ body::before {
 }
 .order-sync-pill.show { display: inline-flex; }
 .order-sync-pill.offline { background: rgba(255,209,102,0.1); border-color: var(--warn); color: var(--warn); }
-.order-sync-pill.syncing { background: rgba(77,196,196,0.1); border-color: var(--teal-light); color: var(--teal-light); }
+.order-sync-pill.syncing { background: rgba(240,155,67,0.1); border-color: var(--cela-accent); color: var(--cela-accent); }
 .order-sync-dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
 .order-sync-pill.syncing .order-sync-dot { animation: order-sync-pulse 1.2s ease infinite; }
 @keyframes order-sync-pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.3; } }
@@ -591,7 +593,7 @@ body::before {
   transition: border-color 0.15s;
 }
 .catalog-search-input::placeholder { color: var(--text-faint); }
-.catalog-search-input:focus { border-color: var(--teal-bright); }
+.catalog-search-input:focus { border-color: var(--cela-bright); }
 .catalog-search-clear {
   position: absolute; right: 8px;
   width: 22px; height: 22px;
@@ -627,7 +629,7 @@ body::before {
   transition: background 0.15s, color 0.15s, border-color 0.15s;
 }
 .category-chip.active {
-  background: linear-gradient(135deg, var(--teal-mid), var(--teal-bright));
+  background: linear-gradient(135deg, var(--cela-mid), var(--cela-bright));
   border-color: transparent;
   color: var(--white);
 }
@@ -646,7 +648,7 @@ body::before {
   outline: none;
   -webkit-appearance: none; appearance: none;
 }
-.catalog-sort-select:focus { border-color: var(--teal-bright); }
+.catalog-sort-select:focus { border-color: var(--cela-bright); }
 
 .catalog-toolbar {
   display: flex; align-items: center; justify-content: space-between;
@@ -666,7 +668,7 @@ body::before {
   box-shadow: var(--shadow-sm);
   transition: border-color 0.15s, background 0.15s, box-shadow 0.2s;
 }
-.item-card:active { border-color: var(--teal-bright); background: var(--surface-hi); box-shadow: none; }
+.item-card:active { border-color: var(--cela-bright); background: var(--surface-hi); box-shadow: none; }
 
 .item-thumb {
   width: 100%; height: 40px;
@@ -712,7 +714,7 @@ body::before {
   cursor: pointer;
   transition: border-color 0.15s;
 }
-.item-row:active { border-color: var(--teal-bright); }
+.item-row:active { border-color: var(--cela-bright); }
 .item-row .item-thumb { width: 78px; height: 36px; margin-bottom: 0; flex-shrink: 0; }
 .item-row .loc-tag { font-size: 8.5px; padding: 3px 4px; letter-spacing: 0.1px; -webkit-line-clamp: 2; }
 .item-row .item-info { flex: 1; min-width: 0; }
@@ -720,8 +722,8 @@ body::before {
 
 .in-cart-badge {
   font-size: 10px; font-weight: 800;
-  color: var(--teal-deep);
-  background: var(--teal-light);
+  color: var(--cela-deep);
+  background: var(--cela-accent);
   padding: 5px 9px;
   border-radius: 20px;
   flex-shrink: 0;
@@ -740,7 +742,7 @@ body::before {
 }
 .qty-btn {
   width: 30px; height: 30px; border-radius: 8px; border: none;
-  background: linear-gradient(135deg, var(--teal-mid), var(--teal-bright));
+  background: linear-gradient(135deg, var(--cela-mid), var(--cela-bright));
   color: var(--white); font-weight: 800; font-size: 16px;
   cursor: pointer;
   display: flex; align-items: center; justify-content: center;
@@ -755,15 +757,15 @@ body::before {
 .btn-primary {
   width: 100%; padding: 14px;
   border: none; border-radius: var(--radius-md);
-  background: linear-gradient(135deg, var(--teal-mid), var(--teal-bright));
-  color: var(--white);
+  background: linear-gradient(135deg, #f5ad62, var(--cela-accent));
+  color: var(--cela-deep);
   font-weight: 700; font-size: 14px; letter-spacing: 0.3px;
   cursor: pointer; margin-top: 16px;
-  box-shadow: 0 8px 22px rgba(15,80,80,0.35);
+  box-shadow: 0 8px 22px rgba(240,155,67,0.28);
   transition: transform 0.1s, opacity 0.15s, box-shadow 0.2s;
 }
 .btn-primary:disabled { opacity: 0.35; cursor: not-allowed; box-shadow: none; }
-.btn-primary:active:not(:disabled) { transform: scale(0.98); box-shadow: 0 4px 12px rgba(15,80,80,0.3); }
+.btn-primary:active:not(:disabled) { transform: scale(0.98); box-shadow: 0 4px 12px rgba(0,48,120,0.3); }
 
 .btn-secondary {
   width: 100%; padding: 12px;
@@ -807,7 +809,7 @@ body::before {
   transition: background 0.15s, color 0.15s;
 }
 .case-btn.active {
-  background: linear-gradient(135deg, var(--teal-mid), var(--teal-bright));
+  background: linear-gradient(135deg, var(--cela-mid), var(--cela-bright));
   color: var(--white);
 }
 .case-hint {
@@ -838,7 +840,7 @@ select, .text-field {
   font-family: var(--sans);
   -webkit-appearance: none; appearance: none;
 }
-select:focus, .text-field:focus { border-color: var(--teal-bright); }
+select:focus, .text-field:focus { border-color: var(--cela-bright); }
 .text-field::placeholder { color: var(--text-faint); }
 
 /* The dropdown's open option list is browser-native and mostly ignores
@@ -847,12 +849,12 @@ select:focus, .text-field:focus { border-color: var(--teal-bright); }
    defaulting to a plain white popup. iOS/Android render their own OS
    picker instead of this list, so this doesn't affect mobile. */
 select option {
-  background: #0d4444;
+  background: #002560;
   color: var(--white);
 }
 select option:checked,
 select option:hover {
-  background: var(--teal-mid);
+  background: var(--cela-mid);
 }
 
 .summary-table {
@@ -882,13 +884,13 @@ select option:hover {
   position: fixed; bottom: 0; left: 0; right: 0;
   display: flex; justify-content: center;
   padding: 12px 18px calc(12px + env(safe-area-inset-bottom));
-  background: linear-gradient(180deg, transparent, var(--teal-deep) 35%);
+  background: linear-gradient(180deg, transparent, var(--cela-deep) 35%);
   z-index: 90;
 }
 .bottom-nav-inner {
   max-width: 460px; width: 100%;
   display: flex; gap: 6px;
-  background: rgba(10,53,53,0.92);
+  background: rgba(0,26,69,0.92);
   border: 1px solid var(--border-mid);
   border-radius: 16px;
   padding: 8px;
@@ -904,7 +906,7 @@ select option:hover {
   transition: background 0.15s, color 0.15s;
 }
 .nav-btn .nav-emoji { display: block; font-size: 17px; margin-bottom: 3px; }
-.nav-btn.active { background: rgba(77,196,196,0.18); color: var(--teal-light); }
+.nav-btn.active { background: rgba(240,155,67,0.18); color: var(--cela-accent); }
 
 /* ── Install app banner (mobile-only prompt to add to home screen) ── */
 .install-banner {
@@ -916,7 +918,7 @@ select option:hover {
   padding: 14px;
   border-radius: var(--radius-lg);
   margin: 0 10px;
-  background: rgba(9,45,45,0.98);
+  background: rgba(0,22,60,0.98);
   backdrop-filter: blur(14px);
   -webkit-backdrop-filter: blur(14px);
   border: 1px solid var(--border-mid);
@@ -937,7 +939,7 @@ select option:hover {
 .install-banner-actions { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
 .install-banner-btn {
   padding: 9px 14px; border-radius: 100px; border: none;
-  background: linear-gradient(135deg, var(--teal-mid), var(--teal-bright));
+  background: linear-gradient(135deg, var(--cela-mid), var(--cela-bright));
   color: var(--white); font-family: var(--sans); font-weight: 700; font-size: 12px;
   cursor: pointer; white-space: nowrap;
 }
@@ -978,14 +980,14 @@ select option:hover {
 /* ── Modal ── */
 .modal-backdrop {
   position: fixed; inset: 0;
-  background: rgba(0,20,20,0.7);
+  background: rgba(0,12,35,0.7);
   display: none; align-items: flex-end; justify-content: center;
   z-index: 300;
 }
 .modal-backdrop.show { display: flex; }
 .modal-sheet {
   width: 100%; max-width: 460px;
-  background: #0d4040;
+  background: #00285f;
   border: 1px solid var(--border-mid);
   border-bottom: none;
   border-radius: 20px 20px 0 0;
@@ -1025,15 +1027,15 @@ select option:hover {
   margin-left: auto;
   white-space: nowrap;
   padding: 7px 14px;
-  border: 1.5px solid var(--teal-bright);
+  border: 1.5px solid var(--cela-bright);
   border-radius: 100px;
-  background: rgba(42,157,157,0.12);
-  color: var(--teal-light);
+  background: rgba(61,90,150,0.12);
+  color: var(--cela-accent);
   font-family: var(--sans);
   font-size: 11.5px; font-weight: 700;
   cursor: pointer;
 }
-.contact-btn:active { background: rgba(42,157,157,0.25); transform: scale(0.97); }
+.contact-btn:active { background: rgba(61,90,150,0.25); transform: scale(0.97); }
 
 .contact-btn-group {
   flex: 0 0 auto;
@@ -1045,14 +1047,14 @@ select option:hover {
   width: 34px; height: 34px;
   flex: 0 0 auto;
   display: flex; align-items: center; justify-content: center;
-  border: 1.5px solid var(--teal-bright);
+  border: 1.5px solid var(--cela-bright);
   border-radius: 50%;
-  background: rgba(42,157,157,0.12);
+  background: rgba(61,90,150,0.12);
   cursor: pointer;
   padding: 0;
 }
 .contact-icon-btn .svg-icon { width: 17px; height: 17px; }
-.contact-icon-btn:active { background: rgba(42,157,157,0.25); transform: scale(0.94); }
+.contact-icon-btn:active { background: rgba(61,90,150,0.25); transform: scale(0.94); }
 
 /* ══════════════════════════════════════════════
    DESKTOP LAYOUT
@@ -1068,7 +1070,7 @@ select option:hover {
     display: flex;
     justify-content: center;
     align-items: flex-start;
-    background: radial-gradient(ellipse at 50% 0%, #123a3a 0%, #061e1e 60%, #04141a 100%);
+    background: radial-gradient(ellipse at 50% 0%, #0b2a5c 0%, #001233 60%, #000a1f 100%);
     min-height: 100vh;
     padding: 32px 16px;
   }
@@ -1097,16 +1099,16 @@ select option:hover {
 
   /* Mouse-specific hover states — ignored entirely on touch devices */
   @media (hover: hover) and (pointer: fine) {
-    .home-nav-card:hover { border-color: var(--teal-bright); background: var(--surface-hi); cursor: pointer; }
-    .item-card:hover, .item-row:hover { border-color: var(--teal-bright); cursor: pointer; }
+    .home-nav-card:hover { border-color: var(--cela-bright); background: var(--surface-hi); cursor: pointer; }
+    .item-card:hover, .item-row:hover { border-color: var(--cela-bright); cursor: pointer; }
     .icon-btn:hover { background: var(--surface-hi); cursor: pointer; }
-    .nav-btn:hover { color: var(--teal-light); cursor: pointer; }
+    .nav-btn:hover { color: var(--cela-accent); cursor: pointer; }
     .btn-primary:hover:not(:disabled) { filter: brightness(1.08); cursor: pointer; }
     .btn-secondary:hover { background: var(--surface); cursor: pointer; }
-    .contact-btn:hover { background: rgba(42,157,157,0.2); cursor: pointer; }
-    .contact-icon-btn:hover { background: rgba(42,157,157,0.2); cursor: pointer; }
+    .contact-btn:hover { background: rgba(61,90,150,0.2); cursor: pointer; }
+    .contact-icon-btn:hover { background: rgba(61,90,150,0.2); cursor: pointer; }
     .case-btn:hover:not(.active) { background: rgba(255,255,255,0.05); cursor: pointer; }
-    .modal-tab:hover { color: var(--teal-light); cursor: pointer; }
+    .modal-tab:hover { color: var(--cela-accent); cursor: pointer; }
     .category-chip:hover:not(.active) { background: var(--surface-hi); color: var(--white); cursor: pointer; }
     .catalog-search-clear:hover { background: var(--surface-hi-2); cursor: pointer; }
     a { cursor: pointer; }
@@ -1158,13 +1160,13 @@ select option:hover {
     margin-right: 0;
   }
 
-  .mea-header {
+  .cela-header {
     padding: 20px 40px;
     position: sticky; top: 0;
   }
-  .mea-logo-chip { width: 44px; height: 44px; border-radius: 12px; }
-  .mea-header-titles h1 { font-size: 18px; }
-  .mea-header-titles p { font-size: 11px; }
+  .cela-logo-chip { width: 44px; height: 44px; border-radius: 12px; }
+  .cela-header-titles h1 { font-size: 18px; }
+  .cela-header-titles p { font-size: 11px; }
   .icon-btn { width: 40px; height: 40px; }
 
   .view { padding: 28px 40px 0; }
@@ -1181,7 +1183,7 @@ select option:hover {
     margin: 10px auto 28px;
     padding: 36px 40px;
     gap: 24px;
-    background: linear-gradient(135deg, rgba(42,157,157,0.16), rgba(255,255,255,0.03));
+    background: linear-gradient(135deg, rgba(61,90,150,0.16), rgba(255,255,255,0.03));
     border: 1px solid var(--border-mid);
     border-radius: var(--radius-lg);
   }
@@ -1262,7 +1264,7 @@ select option:hover {
     position: fixed; top: 0; left: 0; bottom: auto; right: auto;
     width: 272px; height: 100vh;
     padding: 24px 16px;
-    background: rgba(7,38,38,0.9);
+    background: rgba(0,18,50,0.9);
     border-right: 1px solid var(--border-dark);
     backdrop-filter: blur(12px);
     -webkit-backdrop-filter: blur(12px);
@@ -1280,8 +1282,8 @@ select option:hover {
     gap: 12px;
     padding: 4px 8px 26px;
   }
-  .sidebar-brand-mea { height: 38px; width: auto; }
-  .sidebar-brand-sus { height: 32px; width: auto; }
+  .sidebar-brand-mark { height: 38px; width: auto; }
+  .sidebar-brand-word { height: 22px; width: auto; }
 
   .bottom-nav-inner {
     max-width: none; width: 100%;
@@ -1348,3 +1350,39 @@ select option:hover {
 
   .identity-block { padding-top: 8px; }
 }
+
+/* ── Acting for (Home) ── */
+.actfor-block { padding: 14px 20px 0; }
+.actfor-label { text-align: left; margin-bottom: 6px; display: block; }
+.actfor-select {
+  width: 100%; padding: 12px 14px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--cela-accent);
+  background: rgba(240,155,67,0.1);
+  color: var(--white); font: 600 14px var(--sans);
+}
+.actfor-select option { color: #18182a; }
+.actfor-note { margin-top: 8px; font-size: 12px; color: var(--warn); }
+
+/* ── Borrowed now / overdue ── */
+.out-filter { padding: 0 20px; margin-bottom: 6px; }
+.out-group-count {
+  display: inline-block; margin-left: 6px; padding: 1px 7px;
+  border-radius: 100px; background: var(--surface-hi); font-size: 10px;
+}
+.out-badge {
+  display: inline-block; margin-left: 4px; padding: 1px 6px;
+  border-radius: 100px; background: rgba(240,155,67,0.18);
+  color: var(--cela-accent); font-size: 9.5px; font-weight: 700; white-space: nowrap;
+}
+.history-item.is-overdue { border-color: rgba(255,107,107,0.45); background: rgba(151,7,8,0.18); }
+.history-item-case.overdue { background: rgba(255,107,107,0.18); color: var(--danger); }
+.history-item-date.overdue { color: var(--danger); font-weight: 600; }
+.home-nav-sub.overdue { color: var(--danger); }
+.resolve-btn {
+  margin-top: 8px; padding: 6px 12px;
+  border-radius: 100px; border: 1px solid var(--cela-accent);
+  background: transparent; color: var(--cela-accent);
+  font: 700 11px var(--sans); cursor: pointer;
+}
+.resolve-btn:disabled { opacity: 0.5; cursor: default; }

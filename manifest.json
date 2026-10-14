@@ -1,13 +1,13 @@
 {
-  "name": "MEA",
-  "short_name": "MEA App",
-  "description": "Management Engineering Association — NFC-based asset ID tracker",
+  "name": "Celadon Inventory",
+  "short_name": "CelaCart",
+  "description": "Ateneo Celadon — org room inventory: find, borrow, use and return items",
   "start_url": "./index.html",
   "scope": "./",
   "display": "standalone",
   "orientation": "portrait",
-  "background_color": "#0a3535",
-  "theme_color": "#0a3535",
+  "background_color": "#001a45",
+  "theme_color": "#001a45",
   "icons": [
     { "src": "icons/icon-72.png",  "sizes": "72x72",   "type": "image/png", "purpose": "any" },
     { "src": "icons/icon-96.png",  "sizes": "96x96",   "type": "image/png", "purpose": "any" },

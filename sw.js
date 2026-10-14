@@ -1,19 +1,15 @@
-// MEA App — Service Worker
+// Celadon Inventory — Service Worker
 // Network-first for the app shell so deployments show up immediately.
 // Cache is only used as an offline fallback, never as the primary source.
-// NFC scanning and Google Sheets requests always go live, never cached.
+// Google Sheets (Apps Script) requests always go live, never cached.
 
-const CACHE_NAME = 'mea-app-v7'; // bump this string on any future SW change to force a clean cache
+const CACHE_NAME = 'cela-app-v2'; // bump this string on any future SW change to force a clean cache
 const APP_SHELL = [
   './',
   './index.html',
-  './id-tracker.html',
   './inventory.css',
-  './dashboard.css',
   './inventory.js',
-  './dashboard-rules.js',
-  './dashboard-model.js',
-  './dashboard.js',
+  './brand/dreagle-mark-white.png',
   './manifest.json',
   './icons/icon-192.png',
   './icons/icon-512.png'

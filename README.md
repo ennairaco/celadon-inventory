@@ -1,113 +1,43 @@
-# MEA App
+# Celadon Inventory (CelaCart)
 
-A mobile-first Progressive Web App for the Management Engineering Association. It combines the NFC/manual ID Tracker, the room-inventory catalog, and the SUS Dashboard in one static GitHub Pages app backed by Google Sheets and Apps Script.
+A mobile-first web app for Ateneo Celadon's org room inventory. Members log in with their Ateneo ID, pick the project or department they're acting for, find where an item is stored, and log a **Borrow**, **Use up**, or **Return**. **Borrowed now** shows everything out of the org room, with overdue items in red, and a daily script sends reminders. Everything is written to a Google Sheet through one Apps Script.
 
-## What is included
+Adapted from MEA's app ([David-GY/mea-id](https://github.com/David-GY/mea-id)). MEA's NFC ID Tracker and SUS Dashboard were removed because they're specific to MEA. The catalog, cart, offline queue, history, and installable-app (PWA) behaviour are kept.
 
-- ID Operations Dashboard for Admin and Dashboard users.
-- Read-only project roster with project/member selection and sheet-backed state filters.
-- Interactive ID operation totals derived from one normalized tracker response.
-- Project Readiness Matrix with reusable readiness calculation and traffic-light status.
-- Dedicated cross-device Activity Log with a compact dashboard preview, incremental polling, cached offline fallback, visibility/online recovery, and exponential retry backoff.
-- Existing ID Tracker, inventory catalog, checkout, offline queues, installed PWA behavior, and dark-teal responsive design remain in place.
+## What changed from MEA
 
-## Architecture
+| Area | MEA | Celadon |
+|---|---|---|
+| Backends | Two scripts (ID tracker + room inventory) | One script: `apps-script/celadon-inventory.gs` |
+| Login | Tracker sheet `MAIN` | Celadon's existing members sheet (or a `MEMBERS` tab) |
+| Accountability | Free-text project | Required "acting for" project/department, allowed via department + `CORES` tab |
+| Branding | Dark teal, Plus Jakarta Sans, MEA/SUS logos | Celadon navy `#003078` + orange `#f09b43`, Montserrat, Celadon mark (from ateneoceladon.com) |
+| Requests | Borrow/consume/return left as cell comments | Logged as rows in `REQUESTS` with due dates. "Use up" deducts the quantity, and "Mark returned" clears a borrow |
+| What's out | Read the comments | `BORROWED_NOW` tab + Borrowed-now screen + "N out" on items |
+| Overdue | None | Daily trigger: highlights overdue rows and emails a digest (and optionally borrowers) |
+| Storage areas | Free text | Dropdown from the `STORAGE_AREAS` tab |
+| Projects | Hard-coded MEA list | `PROJECTS` tab (Celadon departments + projects pre-filled) |
+| Contacts | SUS team | Placeholder; edit `CONTACTS` in `inventory.js` |
 
-The frontend is static and deployable to GitHub Pages. Google Sheets remain the shared source of truth:
-
-| Source | Use |
-|---|---|
-| `[SUS] MEA ID tracker` (`1426S83-4R3b7Ys81thvRETPbmIiNjJtYw853gFhuj-I`) | `MAIN` as the home/member list, plus `INVENTORY`, `W/Proj`, `DEPLOYED`, `PRINTING`, `ACCESS`, `CBAB`, and new `ACTIVITY_LOG`/`IDEMPOTENCY_LOG` tabs |
-| `[2627] MEA Room Inventory` | Existing Catalog, order, and history backend |
-
-The consolidated Apps Script is [apps-script/sus-dashboard-reference.gs](apps-script/sus-dashboard-reference.gs). It explicitly opens spreadsheet `1426S83-4R3b7Ys81thvRETPbmIiNjJtYw853gFhuj-I` and uses `MAIN` as the home/member sheet. It contains no deployed URL or access token and is intended to be the single tracker web-app script. It preserves the legacy `tracker`, `login`, `access`, and `meansList` routes, includes the optional `deets` lookup and spreadsheet-bound `bulkMove` utility, and adds the Dashboard routes. Keep the `[2627] MEA Room Inventory` backend separate.
-
-### Important files
+## Files
 
 ```text
-index.html                         PWA shell and Dashboard/Activity views
-inventory.js                       Existing app logic plus Dashboard navigation guard
-dashboard-rules.js                 Pure Needs deployment/readiness rules
-dashboard-model.js                 Pure normalization, totals, readiness, and activity merge
-dashboard.js                       Read-only Dashboard UI, API client, polling, offline fallback
-dashboard.css                      Responsive Dashboard/Activity styling
-apps-script/sus-dashboard-reference.gs  Apps Script reference implementation
-tests/dashboard.test.js            Fixture-driven rule/model/backend-contract tests
-sw.js                              Network-first service worker, updated app shell and cache version
+index.html                         App shell (login, home, catalog, cart, checkout, history, settings, help)
+inventory.js                       App logic, offline caches, request queue
+inventory.css                      Celadon theme
+apps-script/celadon-inventory.gs   The backend (paste into the sheet's Apps Script)
+apps-script/catalog-seed-from-old-tracker.csv  186 items (org room + merch + MAF) from the 2026 tracker, ready to import into CATALOG
+apps-script/storage-areas-seed.csv            11 cleaned-up storage area names for STORAGE_AREAS
+tests/apps-script.test.js          Backend tests against a mock spreadsheet
+sw.js, manifest.json, icons/, brand/   PWA + branding
 ```
 
-## Dashboard data model and formulas
+## Setup
 
-The client normalizes one `dashboardData` response into member records, then derives all cards, readiness rows, and roster filters from that model. It does not calculate separate totals from separate UI components.
+See [SETUP.md](SETUP.md).
 
-**Needs deployment** is centralized in `dashboard-rules.js`:
+## Tests
 
-```text
-requiresId === true
-AND state is not DEPLOYED
-AND state is INVENTORY or WITH_PROJECT
+```bash
+node tests/apps-script.test.js
 ```
-
-**Readiness percentage** is also centralized:
-
-```text
-100%                                   when no assigned member requires an ID
-deployed required members / required members × 100, otherwise
-```
-
-An available ID in Inventory or With Project counts under `IDs ready`, but not as deployed. Any missing/printing/unknown required ID or data blocker makes the project red; complete deployment is green; otherwise it is yellow.
-
-MAIN project columns are detected dynamically. A non-reserved project column with a truthy value (`Yes`, `true`, `1`, or another non-empty value other than `No`/`false`/`0`) is treated as an assignment. The separate `CBAB` roster tab is also treated as the `CBAB` project membership source, using its `ID num` column.
-
-## Apps Script setup and migration
-
-1. Open the `[SUS] MEA ID tracker` spreadsheet and create the required tabs if they do not exist: `MAIN`, `INVENTORY`, `W/Proj`, `DEPLOYED`, `PRINTING`, and `ACCESS`. Keep the `CBAB` roster tab available if CBAB should appear as a project option.
-2. Add an `ACTIVITY_LOG` tab with exactly this header row:
-
-   ```text
-   Event ID | Server timestamp | Actor ID | Actor name | Action type | Target ID | Target name | Project | Previous state | New state | Batch ID | Device/client ID | Result | Details
-   ```
-
-3. Replace duplicate tracker router/helper files with the single consolidated `apps-script/sus-dashboard-reference.gs` source. Do not leave another file defining `doGet` or `doPost`; Apps Script silently uses the duplicate declaration that appears later. The script supports `login`, `access`, `meansList`, `tracker`, `dashboardData`, `activity`, optional `deets`, and the spreadsheet-bound `bulkMove` utility. Dashboard routes are read-only; the existing single-ID tracker route remains separate. It accepts the tracker workbook's two-row `MAIN` header layout, headered state tabs, and older headerless ID columns.
-4. Deploy a new Web App version, executing as the sheet owner. Keep the existing `/exec` URL configuration in the app; Apps Script changes require a new deployment version.
-5. Set the optional `ACCESS_TOKEN` Script Property and configure the same token in the existing ID Tracker settings. The Dashboard sends the logged-in actor ID and token; the backend verifies `ACCESS` levels server-side. If the project is standalone rather than sheet-bound, set `TRACKER_SPREADSHEET_ID`; the optional Digital Card lookup can use `DEETS_SPREADSHEET_ID` and `DEETS_SHEET_NAME`.
-6. If the legacy tracker write path is used, keep its existing tracker-side logging and safeguards. The read-only Dashboard does not modify tracker tabs.
-
-7. Open the PWA, sign in with an `ACCESS` record, and open Dashboard. Confirm that the displayed totals, project rosters, state filters, and activity match the tracker sheets.
-
-The `[2627] MEA Room Inventory` Apps Script remains a separate backend and is configured through the existing Inventory Script URL field. No production Sheet data is modified by the repository test suite.
-
-## API contract
-
-Dashboard reads use the tracker endpoint with `action=dashboardData`, `actorId`, and optional `token`. The response is normalized from `members` plus `rawTabs` and includes `revision` and `generatedAt`.
-
-Activity reads use `action=activity&cursor=<last event ID>`. The response contains only events after the cursor, `nextCursor`, and the current revision. The Activity Log polls about every four seconds while visible; dashboard preview refreshes more slowly. Hidden tabs pause timers and visibility/online events refresh immediately.
-
-The Dashboard uses read-only `GET` requests for `dashboardData` and `activity`. It never sends batch moves or writes tracker state; update the source sheets through the established tracker workflow instead.
-
-## Permissions
-
-- `Admin`: Dashboard reads and full Activity Log.
-- `Dashboard`: read-only Dashboard and Activity Log.
-- `Tracker`: existing ID Tracker only.
-- Ordinary users: existing ordinary-user surfaces only.
-
-The UI hides/guards restricted navigation, but the Apps Script actions also require the actor ID to be present in `ACCESS` with the appropriate level. Hiding a button is not the authorization boundary.
-
-## Verification
-
-Run the repository tests with:
-
-```text
-node --test tests/dashboard.test.js tests/batch-simulator.test.js
-```
-
-The tests cover normal, missing, duplicate, conflicting, orphaned, printing, readiness, “Needs deployment”, activity de-duplication/order, and backend safeguard contracts. Apps Script execution itself requires the Google Apps Script runtime; use a copied test spreadsheet or fixtures and never the production tabs.
-
-For a deployment smoke test, verify the sheet snapshot, state-tab conflict detection, activity added from a second browser/device, reconnect/visibility polling, cached offline display, and Admin/Dashboard/Tracker/ordinary-user access. Check both a narrow mobile viewport and a wide desktop viewport, then confirm the service worker cache version is updated and the app shell is served from the new deployment.
-
-## Existing limitations
-
-- Web NFC is supported only by Chrome on Android; manual ID entry works on other browsers.
-- Apps Script Web Apps do not provide persistent WebSockets, so cross-device activity is resilient cursor polling rather than a push channel.
-- Cached Dashboard/Activity data is device-local fallback only and is clearly labeled; the shared source of truth remains Google Sheets.
