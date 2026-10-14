@@ -501,6 +501,7 @@
     bindCatalogToggle();
     bindCheckoutForm();
     bindForSheet();
+    bindAppearance();
     bindModal();
     bindInstallBanner();
     renderContacts();
@@ -528,12 +529,16 @@
     if ('serviceWorker' in navigator) {
       navigator.serviceWorker.register('sw.js', { updateViaCache: 'none' }).catch(() => {});
     }
-    requestAnimationFrame(() => {
+    // Hide the splash after the first screen is drawn (with a timer as a
+    // fallback for browsers that delay animation frames).
+    const hideSplash = () => {
       const splash = document.getElementById('splash');
-      if (!splash) return;
+      if (!splash || splash.classList.contains('hide')) return;
       splash.classList.add('hide');
       setTimeout(() => splash.remove(), 450);
-    });
+    };
+    requestAnimationFrame(hideSplash);
+    setTimeout(hideSplash, 250);
   });
 
   /* ---------------- Navigation ---------------- */
@@ -737,6 +742,41 @@
     return !!(rec.lineId && state.lastId);
   }
 
+  /* ---------------- Appearance: system / light / dark ---------------- */
+  const APPEARANCE_KEY = 'cela_appearance';
+  const darkQuery = window.matchMedia ? matchMedia('(prefers-color-scheme: dark)') : null;
+
+  function getAppearance() {
+    try { return localStorage.getItem(APPEARANCE_KEY) || 'system'; } catch(e) { return 'system'; }
+  }
+
+  function applyAppearance(pref) {
+    const root = document.documentElement;
+    const dark = pref === 'dark' || (pref === 'system' && darkQuery && darkQuery.matches);
+    if (pref === 'system') root.removeAttribute('data-appearance'); else root.setAttribute('data-appearance', pref);
+    root.toggleAttribute('data-theme-dark', !!dark);
+    const meta = document.querySelector('meta[name="theme-color"]');
+    if (meta) meta.setAttribute('content', dark ? '#0b1220' : '#ffffff');
+    document.querySelectorAll('#appearance-tabs [data-appearance]').forEach(b => {
+      const on = b.dataset.appearance === pref;
+      b.classList.toggle('active', on);
+      b.setAttribute('aria-checked', on ? 'true' : 'false');
+    });
+  }
+
+  function bindAppearance() {
+    applyAppearance(getAppearance());
+    document.querySelectorAll('#appearance-tabs [data-appearance]').forEach(b => b.addEventListener('click', () => {
+      try { localStorage.setItem(APPEARANCE_KEY, b.dataset.appearance); } catch(e) {}
+      applyAppearance(b.dataset.appearance);
+    }));
+    // Follow the phone switching between light and dark while the app is open.
+    if (darkQuery) {
+      const onChange = () => { if (getAppearance() === 'system') applyAppearance('system'); };
+      if (darkQuery.addEventListener) darkQuery.addEventListener('change', onChange); else darkQuery.addListener(onChange);
+    }
+  }
+
   /* ---------------- "What is this for?" picker ----------------
      Departments shown with their A-yi, projects with their cover photo from
      ateneoceladon.com. The two hidden <select>s stay as the form values. */
@@ -806,7 +846,7 @@
     const root = document.documentElement.style;
     root.setProperty('--theme', accent);
     root.setProperty('--theme-deep', deep);
-    root.setProperty('--theme-tint', tint);
+    root.setProperty('--theme-tint-light', tint); // dark mode derives its own tint
   }
 
   function brandFor(name) {
