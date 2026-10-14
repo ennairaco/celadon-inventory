@@ -71,9 +71,9 @@
       </div>
 
       <div class="actfor-block">
-        <label class="id-input-label actfor-label" for="home-actfor-select">ACTING FOR</label>
-        <select id="home-actfor-select" class="actfor-select" aria-label="Project or department you're acting for"></select>
-        <div class="actfor-note" id="actfor-empty-note" style="display:none;">You're not linked to a department or project yet. Ask an officer to add you to CORES.</div>
+        <label class="id-input-label actfor-label" for="home-actfor-select">BORROWING / USING FOR</label>
+        <select id="home-actfor-select" class="actfor-select" aria-label="Project or department you're borrowing or using items for"></select>
+        <div class="actfor-note" id="actfor-empty-note" style="display:none;">Couldn't load the project list. Check your connection and reopen the app.</div>
       </div>
 
       <div class="home-nav-list">
@@ -195,7 +195,7 @@
         <div class="history-title">Borrowed now</div>
       </div>
       <div class="category-chip-row out-filter" id="out-filter">
-        <button type="button" class="category-chip active" data-filter="mine">Mine &amp; my projects</button>
+        <button type="button" class="category-chip active" data-filter="mine">Mine &amp; my dept</button>
         <button type="button" class="category-chip" data-filter="all">Everything out</button>
       </div>
       <div id="out-list"></div>
@@ -245,7 +245,7 @@
         <button type="button" class="case-btn" data-case="CONSUMING">Use up</button>
         <button type="button" class="case-btn" data-case="RETURNING">Return</button>
       </div>
-      <div class="case-hint" id="case-hint">Borrowing: taking items out of the org room for the project/department above. They stay under it until someone from it marks them returned.</div>
+      <div class="case-hint" id="case-hint">Borrowing: taking items out of the org room for the project/department above. They stay under it until they're marked returned.</div>
 
       <span class="field-label">For (project / department)</span>
       <select id="project-select" aria-required="true"></select>
@@ -327,6 +327,6 @@
   </div>
 
 </div>
-<script src="inventory.js?v=8"></script>
+<script src="inventory.js?v=9"></script>
 </body>
 </html>

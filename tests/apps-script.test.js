@@ -76,8 +76,7 @@ const sheets = {
     ['', 'Item', 'Type', 'Qty', 'Unit', 'Department', 'Storage Area', 'Specific Spot', 'Expiry Date', 'Notes'],
     ['', 'Sunscreen', 'Toiletries & Hygiene', 13, 'pcs', 'HR', 'Rack (Top Shelf)', 'Black pouch organizer', new Date(today.getTime() + 5 * DAY), '']
   ]),
-  ACCESS: mkSheet('ACCESS', [['ID Number', 'Name', 'Level', 'Email'], ['212348', 'Officer Tan', 'officer', 'tan@example.com']]),
-  CORES: mkSheet('CORES', [['ID Number', 'Name', 'Project', 'Role'], ['212345', 'Juan', 'Mid-Autumn Festival', 'Core'], ['212346', 'Maria', 'Mid-Autumn Festival', 'Core']])
+  ACCESS: mkSheet('ACCESS', [['ID Number', 'Name', 'Level', 'Email'], ['212348', 'Officer Tan', 'officer', 'tan@example.com']])
 };
 const MEMBER_ROWS = [
   ['ID Number', 'Name', 'Department', 'Position', 'Email'],
@@ -117,8 +116,8 @@ const snapshot = JSON.stringify(sheets.Inventory.data.map(r => r.slice()));
 // Setup adds the app tabs only
 api.setupSheets();
 sheets.MEMBERS.data.length = 0; MEMBER_ROWS.forEach(r => sheets.MEMBERS.data.push(r));
-['MEMBERS', 'ACCESS', 'PROJECTS', 'CORES', 'REQUESTS', 'BORROWED_NOW'].forEach(t => assert.ok(sheets[t], t + ' created'));
-assert.ok(!sheets.CATALOG && !sheets.STORAGE_AREAS, 'no CATALOG/STORAGE_AREAS tabs');
+['MEMBERS', 'ACCESS', 'PROJECTS', 'REQUESTS', 'BORROWED_NOW'].forEach(t => assert.ok(sheets[t], t + ' created'));
+assert.ok(!sheets.CATALOG && !sheets.STORAGE_AREAS && !sheets.CORES, 'no CATALOG/STORAGE_AREAS/CORES tabs');
 assert.strictEqual(JSON.stringify(sheets.Inventory.data), snapshot, 'setup leaves Inventory untouched');
 const mafRow = sheets.PROJECTS.data.findIndex(r => r[0] === 'Mid-Autumn Festival');
 assert.ok(mafRow > 0, 'projects use the sheet\'s event names');
@@ -136,15 +135,17 @@ assert.ok(find('Koi Lanyard', 'Merch') && find('Zodiac Black Shirt (M)', 'Merch'
 assert.ok(!items.some(i => i.title.startsWith('White Prosper')), 'merch rows without a count skipped');
 assert.ok(find('Sunscreen', 'HR').expiry, 'consumable expiry passed through');
 
-// Login + acting-for rules
-assert.deepStrictEqual(get({ action: 'login', id: '212345' }).actFor, ['COMMPUB', 'Mid-Autumn Festival']);
-assert.deepStrictEqual(get({ action: 'login', id: '212348' }).actFor, ['*']);
+// Login: everyone may pick any project/department; department comes back for the default
+const juan = get({ action: 'login', id: '212345' });
+assert.deepStrictEqual(juan.actFor, ['*']);
+assert.strictEqual(juan.department, 'COMMPUB');
 assert.strictEqual(get({ action: 'login', id: '999999' }).found, false);
-assert.deepStrictEqual(get({ action: 'login', id: '212349' }).actFor, ['OP'], 'Office of the President → OP');
+assert.strictEqual(get({ action: 'login', id: '212349' }).department, 'OP', 'Office of the President → OP');
 assert.ok(get({ action: 'projects' }).projects.includes('OP'));
 const cul = find('Scissors', 'CUL');
 assert.match(post('submitOrder', { idNumber: '212345', caseType: 'BORROWING', items: [{ ref: cul.ref, title: 'Scissors', qty: 1 }] }).error, /Choose the project/);
-assert.match(post('submitOrder', { idNumber: '212347', caseType: 'BORROWING', actingAs: 'Mid-Autumn Festival', items: [{ ref: cul.ref, title: 'Scissors', qty: 1 }] }).error, /only log requests/);
+assert.match(post('submitOrder', { idNumber: '212347', caseType: 'BORROWING', actingAs: 'Made-up Event', items: [{ ref: cul.ref, title: 'Scissors', qty: 1 }] }).error, /not in the PROJECTS list/);
+assert.match(post('submitOrder', { idNumber: '000001', caseType: 'BORROWING', actingAs: 'HR', items: [{ ref: cul.ref, title: 'Scissors', qty: 1 }] }).error, /not in the member list/);
 
 // Borrow all 5 CUL scissors for MAF → Status Out; COMMPUB scissors untouched
 let r = post('submitOrder', { clientId: 'c1', idNumber: '212345', caseType: 'BORROWING', actingAs: 'Mid-Autumn Festival', items: [{ ref: cul.ref, title: 'Scissors', qty: 5 }] });
@@ -174,13 +175,13 @@ assert.strictEqual(invRow('Pushpins', 'COMMPUB')[QTY], '*');
 assert.strictEqual(sheets.Celamerch.data.find(x => x[2] === 'Koi')[5], 50);
 assert.ok(!get({ action: 'inventory' }).items.some(i => i.title === 'Masking Tape'));
 
-// Resolve: unrelated member denied; another MAF core can; Status back to In Storage
+// Resolve: any member can (HR's Ana returns MAF's scissors); Status back to In Storage
 let hist = get({ action: 'history' }).records;
 const mafLine = hist.find(x => x.project === 'Mid-Autumn Festival');
-assert.match(post('resolve', { idNumber: '212347', lineId: mafLine.lineId }).error, /Only the borrower/);
-assert.ok(post('resolve', { idNumber: '212346', lineId: mafLine.lineId }).ok);
+assert.match(post('resolve', { idNumber: '000001', lineId: mafLine.lineId }).error, /not in the member list/);
+assert.ok(post('resolve', { idNumber: '212347', lineId: mafLine.lineId }).ok);
 assert.strictEqual(invRow('Scissors', 'CUL')[STATUS], 'In Storage');
-assert.strictEqual(requests()[1][col('Resolved By')], 'Maria Santos');
+assert.strictEqual(requests()[1][col('Resolved By')], 'Ana Lim');
 
 // Checkout "Return" clears the project's borrow
 post('submitOrder', { clientId: 'c4', idNumber: '212345', caseType: 'BORROWING', actingAs: 'Mid-Autumn Festival', items: [{ ref: cul.ref, title: 'Scissors', qty: 5 }] });

@@ -702,10 +702,10 @@
       </div>`;
   }
 
-  /* ---------------- Acting for a project / department ----------------
+  /* ---------------- Borrowing for a project / department ----------------
      Every borrow or use-up is logged under a project or department, never
-     personally. The list comes from login: the member's own department plus
-     any project they're a core of (CORES tab). Officers get '*' = anything. */
+     personally. Any member can pick any active one (login returns '*'); the
+     picker starts on their own department. */
   const ACTING_AS_KEY = 'cela_acting_as';
 
   function getSavedActingAs() {
@@ -728,19 +728,18 @@
     return actFor.slice();
   }
 
-  function canActFor(project) {
-    const actFor = (state.lastId && Array.isArray(state.lastId.actFor)) ? state.lastId.actFor : [];
-    return actFor.includes('*') || actFor.some(a => sameName(a, project));
-  }
-
+  // Anyone can mark a borrow returned (whoever brings it back); the sheet
+  // records who did.
   function canResolve(rec) {
-    if (!rec.lineId || !state.lastId) return false;
-    return String(rec.idNum).trim() === String(state.lastId.idNumber).trim() || canActFor(rec.project);
+    return !!(rec.lineId && state.lastId);
   }
 
   function renderActForSelects() {
     const targets = allowedTargets();
-    if (!targets.some(t => t === state.actingAs)) state.actingAs = targets[0] || '';
+    if (!targets.some(t => t === state.actingAs)) {
+      const ownDept = state.lastId && state.lastId.committee;
+      state.actingAs = targets.find(t => sameName(t, ownDept)) || targets[0] || '';
+    }
     const html = targets.length
       ? targets.map(t => `<option value="${escapeHtml(t)}"${t === state.actingAs ? ' selected' : ''}>${escapeHtml(t)}</option>`).join('')
       : '<option value="">Not linked to a department or project</option>';
@@ -820,10 +819,11 @@
 
     let pending = pendingBorrows(records);
     if (state.outFilter === 'mine') {
+      // Mine = what I borrowed, plus anything out for my department or the
+      // project/department I've picked on Home.
       const myId = String(state.lastId && state.lastId.idNumber || '').trim();
-      const actFor = (state.lastId && state.lastId.actFor) || [];
-      // Officers can act for everything, so "mine" means their own borrows only.
-      pending = pending.filter(r => String(r.idNum).trim() === myId || (!actFor.includes('*') && canActFor(r.project)));
+      const ownDept = state.lastId && state.lastId.committee;
+      pending = pending.filter(r => String(r.idNum).trim() === myId || sameName(r.project, ownDept) || sameName(r.project, state.actingAs));
     }
     pending.sort((a, b) => (b.overdue - a.overdue) || String(a.due).localeCompare(String(b.due)));
 
@@ -1360,9 +1360,9 @@
   /* ---------------- Checkout view ---------------- */
 
   const CASE_HINTS = {
-    BORROWING: 'Borrowing: taking items out of the org room for the project/department above. They stay under it until someone from it marks them returned.',
+    BORROWING: 'Borrowing: taking items out of the org room for the project/department above. They stay under it until they\'re marked returned.',
     CONSUMING: 'Using up: supplies that won\'t come back (e.g. tape, paper). The quantity is deducted from the sheet and charged to the project/department above.',
-    RETURNING: 'Returning: bringing back items the project/department above borrowed. Clears its pending borrows. You can also tap "Mark returned" in Borrowed now.'
+    RETURNING: 'Returning: bringing back items borrowed for the project/department above. Clears its pending borrows. You can also tap "Mark returned" in Borrowed now.'
   };
 
   function renderCheckout() {

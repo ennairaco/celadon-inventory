@@ -17,21 +17,18 @@
  * Tabs this script adds (setupSheets; never touches the three above):
  *   MEMBERS        ID Number | Name | Department | Position | Email
  *                  (or point MEMBERS_SPREADSHEET_ID at the existing members sheet)
- *   ACCESS         ID Number | Name | Level | Email   (ADMIN or OFFICER)
+ *   ACCESS         ID Number | Name | Level | Email   (officers: get the daily email)
  *   PROJECTS       Project/Dept | Active | Event End Date
- *   CORES          ID Number | Name | Project | Role  (who can act for a project)
  *   REQUESTS       written by the app — one row per item per request
  *   BORROWED_NOW   live view of everything still out (formula, read-only)
  *
- * Every borrow or use-up is made *for* a project or department ("acting
- * for"), never personally. A member can act for:
- *   - their own department (Department column of the member list),
- *   - any project/department they're listed under in CORES,
- *   - anything, if they're ADMIN or OFFICER in ACCESS.
- * Anyone who can act for that project/department can mark its borrows returned.
+ * Every borrow or use-up is made *for* a project or department, never
+ * personally. Any member picks one from the active PROJECTS list (the app
+ * pre-selects their own department). Any member can mark a borrow returned;
+ * REQUESTS records who did.
  *
  * Routes:
- *   GET  ?action=login&id=123456   member lookup (+ projects/depts they can act for)
+ GET  ?action=login&id=123456   member lookup (name, department)
  *   GET  ?action=inventory         items from Inventory + Celamerch + Consumables
  *   GET  ?action=projects          active project/department list
  *   GET  ?action=history           borrow/use-up records
@@ -50,7 +47,7 @@
  *   EXPIRY_WARN_DAYS         flag Consumables expiring within this many days (default 14)
  *   NOTIFY_EMAILS            comma-separated inbox(es) for the daily digest
  *                            (default: emails in ACCESS)
- *   EMAIL_BORROWERS          'true' to also email the borrower and the project's cores
+ *   EMAIL_BORROWERS          'true' to also email each borrower
  */
 
 var CELA = {
@@ -63,14 +60,12 @@ var CELA = {
   MEMBERS: 'MEMBERS',
   ACCESS: 'ACCESS',
   PROJECTS: 'PROJECTS',
-  CORES: 'CORES',
   REQUESTS: 'REQUESTS',
   BORROWED: 'BORROWED_NOW',
   HEADERS: {
     MEMBERS: ['ID Number', 'Name', 'Department', 'Position', 'Email'],
     ACCESS: ['ID Number', 'Name', 'Level', 'Email'],
     PROJECTS: ['Project/Dept', 'Active', 'Event End Date'],
-    CORES: ['ID Number', 'Name', 'Project', 'Role'],
     REQUESTS: [
       'Timestamp', 'Request ID', 'Line ID', 'Client ID', 'ID Number', 'Name',
       'Case', 'Project', 'Department/Reason', 'Item', 'Item Ref', 'Qty',
@@ -204,8 +199,7 @@ function login_(p) {
     name: member.name,
     department: member.department,
     level: level,
-    // Officers may act for anything; the app shows them the full project list.
-    actFor: level === 'ADMIN' || level === 'OFFICER' ? ['*'] : actForList_(id, member)
+    actFor: ['*'] // any member may borrow/use for any active project or department
   };
 }
 
@@ -278,12 +272,10 @@ function submitOrder_(p) {
   var items = Array.isArray(p.items) ? p.items : [];
   if (!items.length) throw new Error('No items in request');
 
-  // Every request is made for a project or department the member can act for.
+  // Every request is made for a project or department from the PROJECTS list.
   var project = String(p.actingAs || p.project || '').trim();
   if (!project || /^personal$/i.test(project)) throw new Error('Choose the project or department this is for');
-  if (!canActFor_(id, project, member)) {
-    throw new Error('You can only log requests for your department or projects you are a core of (not ' + project + ')');
-  }
+  if (!isKnownProject_(project)) throw new Error('"' + project + '" is not in the PROJECTS list');
 
   var lock = LockService.getScriptLock();
   lock.waitLock(20000);
@@ -346,8 +338,8 @@ function submitOrder_(p) {
   }
 }
 
-// Marks one pending borrow line as returned. Allowed for the borrower, anyone
-// who can act for the line's project/department, or an ADMIN/OFFICER.
+// Marks one pending borrow line as returned. Any member may do this (whoever
+// brings the item back); REQUESTS keeps who resolved it.
 function resolve_(p) {
   var id = normalize_(p.idNumber);
   var member = findMember_(id);
@@ -364,10 +356,6 @@ function resolve_(p) {
       var r = t.rows[i];
       if (String(r[c('Line ID')]) !== lineId) continue;
       if (String(r[c('Status')]) !== CELA.STATUS.PENDING) return { ok: true, alreadyResolved: true };
-      var isBorrower = normalize_(r[c('ID Number')]) === id;
-      if (!isBorrower && !canActFor_(id, String(r[c('Project')]), member)) {
-        throw new Error('Only the borrower or someone from ' + (r[c('Project')] || 'that project') + ' can mark this returned');
-      }
       markReturned_(t.sheet, t.headerRow + 2 + i, c, member.name, new Date());
       var ref = String(r[c('Item Ref')] || '');
       var entry = findEntry_(catalogEntries_(), ref, String(r[c('Item')]), String(r[c('Storage Area')]));
@@ -586,7 +574,7 @@ function markReturned_(sheet, rowNum, c, byName, now) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════
-// Members, access, projects, cores
+// Members, access, projects
 // ═══════════════════════════════════════════════════════════════════════
 
 // MEMBERS can live in this spreadsheet or in the org's existing member list
@@ -633,36 +621,9 @@ function accessLevel_(id) {
   return 'NONE';
 }
 
-function isOfficer_(id) {
-  var level = accessLevel_(id);
-  return level === 'ADMIN' || level === 'OFFICER';
-}
-
-function coreProjects_(id) {
-  if (!sheet_(CELA.CORES, false)) return [];
-  var t = table_(CELA.CORES, COLS.id);
-  var list = [];
-  t.rows.forEach(function (r) {
-    var project = cell_(t, r, COLS.project);
-    if (project && normalize_(cell_(t, r, COLS.id)) === id && list.indexOf(project) === -1) list.push(project);
-  });
-  return list;
-}
-
-// Own department first, then CORES entries.
-function actForList_(id, member) {
-  var list = member.department ? [member.department] : [];
-  coreProjects_(id).forEach(function (pr) {
-    if (!list.some(function (x) { return key_(x) === key_(pr); })) list.push(pr);
-  });
-  return list;
-}
-
-function canActFor_(id, project, member) {
-  if (!project) return false;
-  if (isOfficer_(id)) return true;
+function isKnownProject_(project) {
   var want = key_(project);
-  return actForList_(id, member || findMember_(id) || {}).some(function (pr) { return key_(pr) === want; });
+  return projectTable_().some(function (pr) { return pr.active && key_(pr.name) === want; });
 }
 
 function projectTable_() {
@@ -771,7 +732,7 @@ function sendDigest_(overdueLines, expiringLines) {
   MailApp.sendEmail({ to: to, subject: '[Celadon Inventory] ' + subject, body: parts.join('\n\n———\n\n') });
 }
 
-// One email per person: the borrower plus every core of the project.
+// One email per borrower.
 function emailBorrowers_(lines) {
   var byEmail = {};
   var add = function (id, line) {
@@ -780,10 +741,7 @@ function emailBorrowers_(lines) {
     var entry = byEmail[m.email] = byEmail[m.email] || { name: m.name, lines: [] };
     if (entry.lines.indexOf(line) === -1) entry.lines.push(line);
   };
-  lines.forEach(function (l) {
-    add(l.id, l);
-    coreIds_(l.project).forEach(function (id) { add(id, l); });
-  });
+  lines.forEach(function (l) { add(l.id, l); });
   Object.keys(byEmail).forEach(function (email) {
     var entry = byEmail[email];
     MailApp.sendEmail({
@@ -794,14 +752,6 @@ function emailBorrowers_(lines) {
         '\n\nPlease bring them back and tap "Mark returned" in the Celadon Inventory app. Thank you!'
     });
   });
-}
-
-function coreIds_(project) {
-  if (!sheet_(CELA.CORES, false)) return [];
-  var t = table_(CELA.CORES, COLS.id);
-  var want = key_(project);
-  return t.rows.filter(function (r) { return key_(cell_(t, r, COLS.project)) === want; })
-    .map(function (r) { return normalize_(cell_(t, r, COLS.id)); }).filter(String);
 }
 
 function accessEmails_() {
@@ -819,7 +769,7 @@ function setupSheets() {
     .map(function (src) { return src.tab; });
   if (missing.indexOf('Inventory') !== -1) throw new Error('This spreadsheet has no Inventory tab. Open the script from the Celadon Inventory Tracker sheet.');
 
-  var tabs = [CELA.ACCESS, CELA.PROJECTS, CELA.CORES, CELA.REQUESTS];
+  var tabs = [CELA.ACCESS, CELA.PROJECTS, CELA.REQUESTS];
   if (!prop_('MEMBERS_SPREADSHEET_ID')) tabs.unshift(CELA.MEMBERS);
   tabs.forEach(ensureSheet_);
 
@@ -831,8 +781,6 @@ function setupSheets() {
   }
   projects.getRange('C2:C').setNumberFormat('mmm d, yyyy');
 
-  validateColumn_(CELA.CORES, COLS.project, SpreadsheetApp.newDataValidation()
-    .requireValueInRange(projects.getRange('A2:A'), true).build());
   validateColumn_(CELA.ACCESS, COLS.level, SpreadsheetApp.newDataValidation()
     .requireValueInList(['ADMIN', 'OFFICER'], true).build());
 
@@ -846,7 +794,7 @@ function setupSheets() {
 
   setupBorrowedNow_();
   notify_('App tabs are ready (' + tabs.concat(CELA.BORROWED).join(', ') + '). ' +
-    'Inventory, Celamerch and Consumables were not changed. Next: add members, officers (ACCESS) and project cores (CORES).');
+    'Inventory, Celamerch and Consumables were not changed. Next: add members and officers (ACCESS).');
 }
 
 function ensureSheet_(name) {
