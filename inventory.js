@@ -1804,6 +1804,8 @@
     });
 
     document.getElementById('logout-link').addEventListener('click', performLogout);
+    document.getElementById('settings-help-btn').addEventListener('click', () => showView('help'));
+    document.getElementById('settings-history-btn').addEventListener('click', () => showView('history'));
   }
 
   /**
