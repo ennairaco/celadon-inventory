@@ -135,7 +135,7 @@ assert.ok(itemRows.every(r => /^INV-\d{4}$/.test(r[IC('Item ID')])), 'every item
 assert.strictEqual(new Set(itemRows.map(r => r[IC('Item ID')])).size, itemRows.length, 'IDs are unique');
 assert.match(sheets.Inventory.r1c1['6,' + (IC('Currently Borrowed') + 1)], /^=IF\(RC\d+="","",SUMIFS\(REQUESTS!C\d+,REQUESTS!C\d+,RC\d+,REQUESTS!C\d+,"BORROWING",REQUESTS!C\d+,"Pending"\)\)$/);
 sheets.MEMBERS.data.length = 0; MEMBER_ROWS.forEach(r => sheets.MEMBERS.data.push(r));
-['MEMBERS', 'ACCESS', 'PROJECTS', 'REQUESTS', 'BORROWED_NOW'].forEach(t => assert.ok(sheets[t], t + ' created'));
+['MEMBERS', 'OFFICERS', 'PROJECTS', 'REQUESTS', 'BORROWED_NOW'].forEach(t => assert.ok(sheets[t], t + ' created'));
 assert.ok(!sheets.CATALOG && !sheets.STORAGE_AREAS && !sheets.CORES, 'no CATALOG/STORAGE_AREAS/CORES tabs');
 assert.strictEqual(JSON.parse(snapshot).length, sheets.Inventory.data.length, 'setup adds no rows');
 const mafRow = sheets.PROJECTS.data.findIndex(r => r[0] === 'Mid-Autumn Festival');
@@ -348,17 +348,51 @@ assert.deepStrictEqual(r.warnings, []);
 assert.strictEqual(invRow('Scissors', 'CUL')[STATUS], 'In Storage');
 assert.strictEqual(invRow('Blue Cloth', 'CUL')[STATUS], 'Out', 'hand-set Out untouched');
 
-// Daily check: overdue tripods + expiring sunscreen
-const tripodRow = requests().findIndex(x => x[col('Item')] === 'Tripods');
-requests()[tripodRow][col('Due')] = new Date(today.getTime() - 2 * DAY);
-assert.strictEqual(get({ action: 'history' }).records.filter(x => x.overdue).length, 1);
-props.EMAIL_BORROWERS = 'true';
+// Daily check: who gets emailed (OFFICERS tab)
+assert.ok(sheets.OFFICERS, 'OFFICERS created');
+assert.deepStrictEqual(sheets.OFFICERS.data[0], ['Name', 'Nickname', 'Role', 'For', 'Email']);
+[['Officer Tan', '', 'VP', 'FIN', 'tan@example.com'],
+ ['Therese Yap', 'Thess', 'VP', 'CUL', 'culvp@example.com'],
+ ['Hr Vp', '', 'VP', 'HR', 'hrvp@example.com'],
+ ['Pm One', '', 'Project Manager', 'Mid-Autumn Festival', 'pm1@example.com'],
+ ['Pm Two', '', 'Project Manager', 'Mid-Autumn Festival', 'pm2@example.com'],
+ ['Rose Pm', '', 'Project Manager', 'Rose Sale', 'rosepm@example.com'],
+ ['Pres Uy', '', 'President', 'OP', 'pres@example.com'],
+ ['No Email', '', 'VP', 'CUL', '']].forEach(r => sheets.OFFICERS.data.push(r));
+const isPending = x => x[col('Case')] === 'BORROWING' && x[col('Status')] === 'Pending';
+requests().slice(1).filter(isPending).forEach(x => { x[col('Due')] = new Date(today.getTime() + 3 * DAY); });
+const before = requests().length;
+assert.ok(post('submitOrder', { clientId: 'm1', idNumber: '212346', caseType: 'BORROWING', actingAs: 'CUL', items: [{ ref: tripods.ref, title: 'Tripods', qty: 1 }] }).ok);
+assert.ok(post('submitOrder', { clientId: 'm2', idNumber: '212345', caseType: 'BORROWING', actingAs: 'Mid-Autumn Festival', items: [{ ref: cul.ref, title: 'Scissors', qty: 2 }] }).ok);
+requests().slice(before).forEach(x => { x[col('Due')] = new Date(today.getTime() - 2 * DAY); });
+const sunscreen = sheets.Consumables.data.find(r => r[1] === 'Sunscreen');
+sunscreen[sheets.Consumables.data.find(r => r.includes('Expiry Date')).indexOf('Expiry Date')] = new Date(today.getTime() + 7 * DAY);
+mail.length = 0;
 const res = api.flagOverdue();
-assert.deepStrictEqual(res, { overdue: 1, reminded: 1, expiring: 1 });
-assert.strictEqual(mail[0].to, 'tan@example.com');
-assert.match(mail[0].body, /Sunscreen.*expires in 5 days/);
-assert.ok(mail.some(m => m.to === 'juan@example.com'), 'borrower emailed');
+assert.deepStrictEqual([res.overdue, res.reminded, res.expiring], [2, 2, 1]);
+const to = mail.map(m => m.to).sort();
+assert.deepStrictEqual(to, ['culvp@example.com', 'hrvp@example.com', 'maria@example.com', 'pm1@example.com', 'pm2@example.com'],
+  'dept borrow -> borrower + VP; project borrow -> PMs only; expiring -> owning dept VP');
+const mailTo = a => mail.find(m => m.to === a);
+assert.match(mailTo('maria@example.com').htmlBody, /You borrowed this for <b>CUL<\/b>/);
+assert.match(mailTo('culvp@example.com').htmlBody, /Hi Thess,[\s\S]*CUL<\/b> \(your department\)[\s\S]*Maria Santos/);
+assert.match(mailTo('pm1@example.com').htmlBody, /Mid-Autumn Festival<\/b> \(your project\)[\s\S]*Juan Dela Cruz/);
+assert.doesNotMatch(mailTo('pm1@example.com').htmlBody, /Tripods/, 'PMs only see their project');
+assert.match(mailTo('hrvp@example.com').htmlBody, /Sunscreen/);
+assert.match(mailTo('hrvp@example.com').subject, /expiring soon/);
+assert.ok(mail.every(m => m.name === 'Celadon Inventory' && m.body && /ennairaco\.github\.io/.test(m.htmlBody)));
+mail.length = 0;
 assert.strictEqual(api.flagOverdue().reminded, 0, 'no repeat overdue reminder the same day');
+assert.strictEqual(mail.length, 1, 'only the scheduled expiry notice again');
+// NOTIFY_EMAILS gets a copy of everything
+props.NOTIFY_EMAILS = 'head@example.com';
+requests().slice(before).forEach(x => { x[col('Last Reminded')] = ''; });
+mail.length = 0;
+api.flagOverdue();
+assert.match(mailTo('head@example.com').subject, /^\[Copy\]/);
+assert.match(mailTo('head@example.com').htmlBody, /Tripods[\s\S]*Scissors|Scissors[\s\S]*Tripods/);
+delete props.NOTIFY_EMAILS;
+requests().slice(before).forEach(x => { x[col('Status')] = 'Returned'; });
 
 // ---- Permanent IDs: hand-added rows, copy-pasted IDs, old REQUESTS refs ----
 const lastItem = sheets.Inventory.data.length;

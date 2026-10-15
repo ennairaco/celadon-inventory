@@ -19,7 +19,7 @@ Takes about 15 minutes. You need edit access to the **'26-'27 Inventory Tracker*
 | Inventory | Reads every row. Changes only these cells: **Qty** (lowered on "Use up", raised on "Add stock"), **Status** (`Out` when every unit is borrowed, back to `In Storage` when returned, `Used Up` at 0), and a note on the Qty cell recording who did what. Rows marked *Returned to Owner* or *Used Up* are hidden in the app. |
 | Celamerch | Reads rows that have a Count. "Use up" lowers **Count** (e.g. merch given out). |
 | Consumables | Same as Inventory. Items with an **Expiry Date** within 14 days get flagged. |
-| MEMBERS, ACCESS, PROJECTS, REQUESTS, BORROWED_NOW | New tabs that `setupSheets` adds for the app. |
+| MEMBERS, OFFICERS, PROJECTS, REQUESTS, BORROWED_NOW | New tabs that `setupSheets` adds for the app. |
 
 **Item ID** (last column of Inventory, Consumables and Celamerch) is a permanent ID like `INV-0042` that the app uses to track borrows, so renaming, moving or sorting items is safe. Don't edit or copy these cells; the column has a warning if you try. Rows you add by hand get an ID automatically, and copy-pasted duplicate IDs are fixed the same way.
 
@@ -36,7 +36,7 @@ The app only adds rows through **Add to inventory** (to the next empty row of In
 3. Pick **`setupSheets`** in the function dropdown, then press **Run**. Approve the permissions prompt; Google will warn that the app isn't verified, so click *Advanced → Go to project*.
 4. Back in the sheet, fill in the new tabs:
    - **MEMBERS**: `ID Number | Name | Department | Position | Email`. Add yourself first so you can test. Later you can switch to the real members sheet instead (see below).
-   - **ACCESS**: officers (`ADMIN` or `OFFICER`) and their email. They receive the daily email.
+   - **OFFICERS**: `Name | Nickname | Role | For | Email`. One row per VP (For = their department code, e.g. CUL; OP's President and Executive Vice President use OP) and per Project Manager (For = the project name exactly as in PROJECTS). This decides who gets reminder emails. Update it when officers change.
    - **PROJECTS**: already filled with the departments and the 14 events (same names as the Inventory tab's Event column). Set **Event End Date** so project borrows fall due one month after the event. Untick **Active** to hide a project.
    - (No CORES tab needed: any member picks the project or department when borrowing.)
 5. Reload the sheet. A **Celadon Inventory** menu appears.
@@ -62,10 +62,16 @@ In Apps Script, open **Project Settings** and set the time zone to **(GMT+08:00)
 
 **Celadon Inventory → Turn on daily reminders (8 AM)**. Each morning the script:
 - highlights overdue borrows in REQUESTS,
-- emails a digest of overdue borrows and expiring Consumables to the ACCESS emails, or to `NOTIFY_EMAILS` if you set it.
+- emails reminders about overdue borrows, one email per person:
+  - **Department borrows** (e.g. CUL): the **borrower** and that **department's VP** (OP: the President and EVP). The borrower's email comes from MEMBERS.
+  - **Project borrows** (e.g. Mid-Autumn Festival): only that project's **Project Managers**, not the borrower.
+  - Overdue items are re-reminded every 3 days until marked returned.
+- tells each department's VP about their Consumables expiring soon (at 14, 7, 3 and 1 day left, on the day, then weekly once expired).
+
+Emails come from the Google account that turned on the reminders, with the sender name "Celadon Inventory". To see one, use **Celadon Inventory → Email me a sample reminder**.
 
 Optional script properties:
-- `EMAIL_BORROWERS = true`: also email each borrower.
+- `NOTIFY_EMAILS`: an inbox (e.g. an inventory head) that gets a copy of every reminder.
 - `BORROW_DAYS` (default 7): how long a borrow can stay out when its project has no event end date.
 - `REMIND_EVERY_DAYS` (default 3): how often an overdue item is re-reminded.
 - `EXPIRY_WARN_DAYS` (default 14): how early expiring Consumables are flagged.

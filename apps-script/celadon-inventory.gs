@@ -17,7 +17,8 @@
  * Tabs this script adds (setupSheets; never touches the three above):
  *   MEMBERS        ID Number | Name | Department | Position | Email
  *                  (or point MEMBERS_SPREADSHEET_ID at the existing members sheet)
- *   ACCESS         ID Number | Name | Level | Email   (officers: get the daily email)
+ *   OFFICERS       Name | Nickname | Role | For | Email  (who gets reminder emails:
+ *                  VPs/President/EVP for their department, PMs for their project)
  *   PROJECTS       Project/Dept | Active | Event End Date
  *   REQUESTS       written by the app — one row per item per request
  *   BORROWED_NOW   live view of everything still out (formula, read-only)
@@ -48,9 +49,8 @@
  *                            due one month after the project's Event End Date.
  *   REMIND_EVERY_DAYS        days between repeat overdue reminders (default 3)
  *   EXPIRY_WARN_DAYS         flag Consumables expiring within this many days (default 14)
- *   NOTIFY_EMAILS            comma-separated inbox(es) for the daily digest
- *                            (default: emails in ACCESS)
- *   EMAIL_BORROWERS          'true' to also email each borrower
+ *   NOTIFY_EMAILS            optional inbox(es) that get a copy of every reminder
+ *   APP_URL                  link in reminder emails (default: the GitHub Pages app)
  *   HISTORY_DAYS             finished lines older than this aren't sent to the app (default 180)
  *   UNDO_HOURS               how long a "Mark returned" can be undone from the app (default 48)
  */
@@ -64,12 +64,14 @@ var CELA = {
   ],
   MEMBERS: 'MEMBERS',
   ACCESS: 'ACCESS',
+  OFFICERS: 'OFFICERS',
   PROJECTS: 'PROJECTS',
   REQUESTS: 'REQUESTS',
   BORROWED: 'BORROWED_NOW',
   HEADERS: {
     MEMBERS: ['ID Number', 'Name', 'Department', 'Position', 'Email'],
     ACCESS: ['ID Number', 'Name', 'Level', 'Email'],
+    OFFICERS: ['Name', 'Nickname', 'Role', 'For', 'Email'],
     PROJECTS: ['Project/Dept', 'Active', 'Event End Date'],
     REQUESTS: [
       'Timestamp', 'Request ID', 'Line ID', 'Client ID', 'ID Number', 'Name',
@@ -78,6 +80,7 @@ var CELA = {
     ]
   },
   DEPARTMENTS: ['OP', 'COMMPUB', 'CUL', 'EXREL', 'FIN', 'HR', 'OSR'],
+  OFFICER_ROLES: ['President', 'Executive Vice President', 'VP', 'Project Manager'],
   // Departments, then the Inventory tab's own Event names so they match.
   DEFAULT_PROJECTS: [
     'OP', 'COMMPUB', 'CUL', 'EXREL', 'FIN', 'HR', 'OSR',
@@ -206,6 +209,7 @@ function onOpen() {
     .addSeparator()
     .addItem('Run daily check now (overdue + expiry)', 'flagOverdue')
     .addItem('Turn on daily reminders (8 AM)', 'installDailyReminder')
+    .addItem('Email me a sample reminder', 'sendSampleReminder')
     .addToUi();
 }
 
@@ -1284,12 +1288,16 @@ function installDailyReminder() {
     if (tr.getHandlerFunction() === 'flagOverdue') ScriptApp.deleteTrigger(tr);
   });
   ScriptApp.newTrigger('flagOverdue').timeBased().everyDays(1).atHour(8).create();
-  notify_('Daily check is on (around 8 AM). Set NOTIFY_EMAILS in Script Properties to choose who gets the digest.');
+  notify_('Daily check is on (around 8 AM). Reminders go to borrowers, VPs and Project Managers listed in OFFICERS, sent from ' + Session.getEffectiveUser().getEmail() + '.');
 }
 
-// Highlights overdue borrows in REQUESTS and emails a digest that also lists
-// expired/expiring Consumables. Each overdue line is re-reminded at most
-// every REMIND_EVERY_DAYS days; expiring items are listed every day.
+// Daily check (8 AM trigger). Highlights overdue borrows in REQUESTS and
+// emails reminders, re-sent every REMIND_EVERY_DAYS days while still out:
+//   • department borrows → the borrower + that department's VP
+//     (OP → President and EVP)
+//   • project borrows    → that project's Project Managers
+// Who's who comes from the OFFICERS tab. Consumables expiring soon go to the
+// owning department's VP. NOTIFY_EMAILS (optional) gets a copy of everything.
 function flagOverdue() {
   try { assignItemIds_(); ensureBorrowedFormulas_(sheet_('Inventory')); } catch (e) { /* repairs are best-effort */ }
   var t = requestsTable_();
@@ -1310,7 +1318,9 @@ function flagOverdue() {
       item: String(r[c('Item')]),
       qty: r[c('Qty')],
       project: String(r[c('Project')]),
-      days: Math.floor((now - due) / 86400000) + 1
+      borrowedAt: r[c('Timestamp')],
+      due: due,
+      days: Math.max(1, Math.floor((now - due) / 86400000) + 1)
     };
     overdue.push(line);
     t.sheet.getRange(rowNum, 1, 1, t.sheet.getLastColumn()).setBackground('#fde2e1');
@@ -1318,77 +1328,206 @@ function flagOverdue() {
     if (!(last instanceof Date) || (now - last) >= every * 86400000 - 3600000) toRemind.push(line);
   });
 
-  var expiring = expiringItems_(now);
-  if (toRemind.length || expiring.length) sendDigest_(toRemind, expiring);
-  if (toRemind.length) {
-    if (prop_('EMAIL_BORROWERS') === 'true') emailBorrowers_(toRemind);
-    toRemind.forEach(function (l) { t.sheet.getRange(l.rowNum, c('Last Reminded') + 1).setValue(now); });
-  }
-  return { overdue: overdue.length, reminded: toRemind.length, expiring: expiring.length };
+  var expiring = expiringEntries_(now);
+  // Expiry notices go out at set points, not every day: 14/7/3/1 days left,
+  // the day itself, then weekly once expired.
+  var warnDays = parseInt(prop_('EXPIRY_WARN_DAYS'), 10) || 14;
+  var expiryNotices = expiring.filter(function (x) {
+    return [warnDays, 7, 3, 1, 0].indexOf(x.days) !== -1 || (x.days < 0 && -x.days % 7 === 0);
+  });
+  var sent = sendReminders_(toRemind, expiryNotices);
+  toRemind.forEach(function (l) { t.sheet.getRange(l.rowNum, c('Last Reminded') + 1).setValue(now); });
+  return { overdue: overdue.length, reminded: toRemind.length, expiring: expiring.length, emails: sent };
 }
 
-function expiringItems_(now) {
+// ---- Who gets what ----
+
+function officers_() {
+  var sheet = sheet_(CELA.OFFICERS, false);
+  if (!sheet) return [];
+  var t = tableFromSheet_(sheet, ['Email']);
+  return t.rows.map(function (r) {
+    return {
+      name: cell_(t, r, ['Name', 'Full Name']),
+      nickname: cell_(t, r, ['Nickname']),
+      role: cell_(t, r, ['Role', 'Position']),
+      forWhat: cell_(t, r, ['For', 'Department/Project', 'Project/Dept']),
+      email: cell_(t, r, ['Email', 'Student Email'])
+    };
+  }).filter(function (o) { return /@/.test(o.email) && o.forWhat; });
+}
+
+function isDepartment_(name) {
+  return CELA.DEPARTMENTS.some(function (d) { return key_(d) === key_(name); });
+}
+
+function isLeadRole_(role) { return /president|^vp\b|vice president/i.test(role); }
+function isPmRole_(role) { return /project manager|^pm\b|\bpm$/i.test(role); }
+
+// [{ email, name, why }] for one overdue line.
+function recipientsFor_(line, officers) {
+  var out = [];
+  if (isDepartment_(line.project)) {
+    var m = findMember_(line.id);
+    if (m && /@/.test(m.email)) out.push({ email: m.email, name: firstName_(m.name), why: 'borrower' });
+    officers.filter(function (o) { return key_(o.forWhat) === key_(line.project) && isLeadRole_(o.role); })
+      .forEach(function (o) { out.push({ email: o.email, name: o.nickname || firstName_(o.name), why: 'lead' }); });
+  } else {
+    officers.filter(function (o) { return key_(o.forWhat) === key_(line.project) && isPmRole_(o.role); })
+      .forEach(function (o) { out.push({ email: o.email, name: o.nickname || firstName_(o.name), why: 'pm' }); });
+  }
+  return out;
+}
+
+function firstName_(full) { return String(full || '').trim().split(/\s+/)[0] || ''; }
+
+function expiringEntries_(now) {
   var warnDays = parseInt(prop_('EXPIRY_WARN_DAYS'), 10) || 14;
   var limit = new Date(startOfDay_(now).getTime() + (warnDays + 1) * 86400000);
   return catalogEntries_().filter(function (e) { return e.expiry && e.expiry < limit; })
     .sort(function (a, b) { return a.expiry - b.expiry; })
     .map(function (e) {
-      var days = Math.round((startOfDay_(e.expiry) - startOfDay_(now)) / 86400000);
-      return '• ' + e.title + (e.qty ? ' (' + e.qty + (e.unit ? ' ' + e.unit : '') + ')' : '') + ' — ' + e.category + ' — ' +
-        (days < 0 ? 'expired ' + (-days) + ' day' + (days === -1 ? '' : 's') + ' ago'
-          : days === 0 ? 'expires today' : 'expires in ' + days + ' day' + (days === 1 ? '' : 's'));
+      return { title: e.title, qty: e.qty, unit: e.unit, dept: e.category, where: e.storage || e.spot,
+        days: Math.round((startOfDay_(e.expiry) - startOfDay_(now)) / 86400000), expiry: e.expiry };
     });
 }
 
-function overdueLine_(l) {
-  return '• ' + l.qty + '× ' + l.item + ' — ' + l.project + ' (borrowed by ' + l.name + ') — ' +
-    l.days + ' day' + (l.days === 1 ? '' : 's') + ' overdue';
-}
-
-function sendDigest_(overdueLines, expiringLines) {
-  var to = prop_('NOTIFY_EMAILS') || accessEmails_().join(',');
-  if (!to) return;
-  var parts = [];
-  if (overdueLines.length) {
-    parts.push('Still out of the org room past their return date:\n\n' + overdueLines.map(overdueLine_).join('\n') +
-      '\n\nOpen the BORROWED_NOW tab for the full list. Mark items returned in the app once they are back.');
-  }
-  if (expiringLines.length) {
-    parts.push('Consumables expired or expiring soon:\n\n' + expiringLines.join('\n'));
-  }
-  var subject = [
-    overdueLines.length ? overdueLines.length + ' overdue borrow' + (overdueLines.length === 1 ? '' : 's') : '',
-    expiringLines.length ? expiringLines.length + ' expiring item' + (expiringLines.length === 1 ? '' : 's') : ''
-  ].filter(String).join(', ');
-  MailApp.sendEmail({ to: to, subject: '[Celadon Inventory] ' + subject, body: parts.join('\n\n———\n\n') });
-}
-
-// One email per borrower.
-function emailBorrowers_(lines) {
-  var byEmail = {};
-  var add = function (id, line) {
-    var m = findMember_(id);
-    if (!m || !m.email) return;
-    var entry = byEmail[m.email] = byEmail[m.email] || { name: m.name, lines: [] };
-    if (entry.lines.indexOf(line) === -1) entry.lines.push(line);
+// One email per person, covering every line they're responsible for.
+function sendReminders_(lines, expiring) {
+  var officers = officers_();
+  var inbox = {};
+  var add = function (r) {
+    var key = r.email.toLowerCase();
+    return (inbox[key] = inbox[key] || { email: r.email, name: r.name, overdue: [], expiring: [] });
   };
-  lines.forEach(function (l) { add(l.id, l); });
-  Object.keys(byEmail).forEach(function (email) {
-    var entry = byEmail[email];
-    MailApp.sendEmail({
-      to: email,
-      subject: '[Celadon Inventory] Please return borrowed items',
-      body: 'Hi ' + (entry.name || '') + ',\n\nThese org room items are past their return date:\n\n' +
-        entry.lines.map(overdueLine_).join('\n') +
-        '\n\nPlease bring them back and tap "Mark returned" in the Celadon Inventory app. Thank you!'
+  lines.forEach(function (l) {
+    var seen = {};
+    recipientsFor_(l, officers).forEach(function (r) {
+      if (seen[r.email.toLowerCase()]) return;
+      seen[r.email.toLowerCase()] = true;
+      add(r).overdue.push({ line: l, why: r.why });
     });
   });
+  expiring.forEach(function (x) {
+    officers.filter(function (o) { return key_(o.forWhat) === key_(x.dept) && isLeadRole_(o.role); })
+      .forEach(function (o) { add({ email: o.email, name: o.nickname || firstName_(o.name) }).expiring.push(x); });
+  });
+  var sent = 0;
+  Object.keys(inbox).forEach(function (k) {
+    var box = inbox[k];
+    if (!box.overdue.length && !box.expiring.length) return;
+    var mail = reminderEmail_(box.name, box.overdue, box.expiring);
+    MailApp.sendEmail({ to: box.email, subject: mail.subject, body: mail.text, htmlBody: mail.html, name: 'Celadon Inventory' });
+    sent++;
+  });
+  // Optional copy of everything for an inventory head.
+  var cc = prop_('NOTIFY_EMAILS');
+  if (cc && (lines.length || expiring.length)) {
+    var all = reminderEmail_('', lines.map(function (l) { return { line: l, why: 'copy' }; }), expiring);
+    MailApp.sendEmail({ to: cc, subject: '[Copy] ' + all.subject, body: all.text, htmlBody: all.html, name: 'Celadon Inventory' });
+    sent++;
+  }
+  return sent;
 }
 
-function accessEmails_() {
-  if (!sheet_(CELA.ACCESS, false)) return [];
-  var t = table_(CELA.ACCESS, COLS.id);
-  return t.rows.map(function (r) { return cell_(t, r, COLS.email); }).filter(String);
+// ---- The email itself (HTML + plain text) ----
+
+function reminderEmail_(name, overdue, expiring) {
+  var appUrl = prop_('APP_URL') || 'https://ennairaco.github.io/celadon-inventory/';
+  var fmt = function (d) { return d instanceof Date ? Utilities.formatDate(d, Session.getScriptTimeZone(), 'MMM d') : ''; };
+  var esc = function (v) { return String(v == null ? '' : v).replace(/[&<>"]/g, function (ch) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[ch]; }); };
+  var plural = function (n, w) { return n + ' ' + w + (n === 1 ? '' : 's'); };
+
+  // Group overdue lines by project/department, with a role-specific intro.
+  var groups = {};
+  overdue.forEach(function (o) {
+    var g = groups[o.line.project] = groups[o.line.project] || { project: o.line.project, why: o.why, lines: [] };
+    g.lines.push(o.line);
+  });
+  var intro = function (g) {
+    if (g.why === 'borrower') return 'You borrowed ' + (g.lines.length === 1 ? 'this' : 'these') + ' for <b>' + esc(g.project) + '</b>:';
+    if (g.why === 'lead') return 'Borrowed for <b>' + esc(g.project) + '</b> (your department):';
+    if (g.why === 'pm') return 'Borrowed for <b>' + esc(g.project) + '</b> (your project):';
+    return 'Borrowed for <b>' + esc(g.project) + '</b>:';
+  };
+  var count = overdue.length;
+  var mine = overdue.every(function (o) { return o.why === 'borrower'; });
+  var subject = count
+    ? 'Reminder: ' + plural(count, 'overdue item') + ' to return to the org room'
+    : 'Heads up: ' + plural(expiring.length, 'item') + ' expiring soon';
+
+  var th = 'style="text-align:left;padding:8px 10px;font-size:12px;color:#4a5468;border-bottom:1px solid #dde3ed;"';
+  var td = 'style="padding:9px 10px;font-size:13px;color:#18182a;border-bottom:1px solid #eef2f8;"';
+  var html = '<div style="background:#f4f6fa;padding:24px 12px;font-family:Montserrat,Arial,Helvetica,sans-serif;">' +
+    '<div style="max-width:560px;margin:0 auto;background:#ffffff;border-radius:16px;overflow:hidden;border:1px solid #dde3ed;">' +
+    '<div style="background:#003078;padding:18px 22px;color:#ffffff;">' +
+      '<div style="font-size:11px;letter-spacing:1.5px;text-transform:uppercase;opacity:.75;">Ateneo Celadon</div>' +
+      '<div style="font-size:19px;font-weight:800;margin-top:2px;">Org room inventory</div></div>' +
+    '<div style="padding:20px 22px;">' +
+      '<p style="margin:0 0 12px;font-size:15px;color:#18182a;">Hi' + (name ? ' ' + esc(name) : '') + ',</p>';
+  if (count) {
+    html += '<p style="margin:0 0 14px;font-size:14px;color:#18182a;line-height:1.5;">' +
+      (count === 1 ? 'This item from the org room is' : 'These items from the org room are') + ' past ' + (count === 1 ? 'its' : 'their') + ' return date:</p>';
+    Object.keys(groups).forEach(function (k) {
+      var g = groups[k];
+      html += '<p style="margin:16px 0 6px;font-size:13px;color:#003078;">' + intro(g) + '</p>' +
+        '<table cellspacing="0" cellpadding="0" style="width:100%;border-collapse:collapse;">' +
+        '<tr><th ' + th + '>Item</th><th ' + th + '>Borrowed by</th><th ' + th + '>Due</th></tr>' +
+        g.lines.map(function (l) {
+          return '<tr><td ' + td + '><b>' + esc(l.item) + '</b> &times; ' + esc(l.qty) + '</td>' +
+            '<td ' + td + '>' + esc(l.name) + '<br><span style="color:#8a93a6;font-size:12px;">on ' + fmt(l.borrowedAt) + '</span></td>' +
+            '<td ' + td + '>' + fmt(l.due) + '<br><span style="color:#c62828;font-size:12px;font-weight:700;">' + plural(l.days, 'day') + ' overdue</span></td></tr>';
+        }).join('') + '</table>';
+    });
+    html += '<p style="margin:18px 0 6px;font-size:14px;color:#18182a;line-height:1.5;">' + (mine
+      ? 'Please bring ' + (count === 1 ? 'it' : 'them') + ' back to the org room, then tap <b>Mark returned</b> in the app.'
+      : 'Please follow up so ' + (count === 1 ? 'it gets' : 'they get') + ' back to the org room and marked returned in the app.') +
+      ' Already returned? Mark it in the app so the inventory stays accurate.</p>';
+  }
+  if (expiring.length) {
+    html += '<p style="margin:18px 0 6px;font-size:13px;color:#003078;"><b>Expiring soon</b> (your department\'s supplies):</p>' +
+      '<ul style="margin:0;padding-left:18px;font-size:13px;color:#18182a;line-height:1.7;">' +
+      expiring.map(function (x) {
+        return '<li>' + esc(x.title) + (x.qty ? ' (' + esc(x.qty) + (x.unit ? ' ' + esc(x.unit) : '') + ')' : '') +
+          ' &middot; ' + (x.days < 0 ? 'expired ' + fmt(x.expiry) : 'expires ' + fmt(x.expiry)) + (x.where ? ' &middot; ' + esc(x.where) : '') + '</li>';
+      }).join('') + '</ul>';
+  }
+  html += '<div style="margin:22px 0 4px;"><a href="' + appUrl + '" style="display:inline-block;background:#003078;color:#ffffff;text-decoration:none;font-weight:700;font-size:14px;padding:12px 20px;border-radius:12px;">Open Celadon Inventory</a></div>' +
+    '</div>' +
+    '<div style="padding:14px 22px;background:#f4f6fa;font-size:11.5px;color:#8a93a6;line-height:1.5;">You\'ll get this reminder every few days until ' + (count === 1 ? 'it\'s' : 'everything is') + ' marked returned. Sent automatically by the Celadon inventory app.</div>' +
+    '</div></div>';
+
+  // Plain-text version for mail apps that don't show HTML.
+  var text = 'Hi' + (name ? ' ' + name : '') + ',\n\n';
+  if (count) {
+    text += (count === 1 ? 'This item from the org room is' : 'These items from the org room are') + ' past their return date:\n';
+    Object.keys(groups).forEach(function (k) {
+      var g = groups[k];
+      text += '\n' + intro(g).replace(/<[^>]+>/g, '') + '\n' + g.lines.map(function (l) {
+        return '  • ' + l.item + ' × ' + l.qty + ' (borrowed by ' + l.name + ' on ' + fmt(l.borrowedAt) + ') - due ' + fmt(l.due) + ', ' + plural(l.days, 'day') + ' overdue';
+      }).join('\n') + '\n';
+    });
+    text += '\n' + (mine ? 'Please bring ' + (count === 1 ? 'it' : 'them') + ' back to the org room, then tap "Mark returned" in the app: '
+      : 'Please follow up so ' + (count === 1 ? 'it gets' : 'they get') + ' back to the org room and marked returned in the app: ') + appUrl + '\n';
+  }
+  if (expiring.length) {
+    text += '\nExpiring soon:\n' + expiring.map(function (x) { return '  • ' + x.title + ' - ' + (x.days < 0 ? 'expired ' : 'expires ') + fmt(x.expiry); }).join('\n') + '\n';
+  }
+  text += '\n- Celadon Inventory';
+  return { subject: subject, html: html, text: text };
+}
+
+// Menu: email yourself a sample reminder (with made-up items) to see how it looks.
+function sendSampleReminder() {
+  var me = Session.getActiveUser().getEmail() || Session.getEffectiveUser().getEmail();
+  var now = new Date();
+  var d = function (n) { return new Date(now.getTime() + n * 86400000); };
+  var mail = reminderEmail_('Therese', [
+    { why: 'lead', line: { project: 'CUL', item: 'Tripods', qty: 2, name: 'Juan Dela Cruz', borrowedAt: d(-12), due: d(-5), days: 5 } },
+    { why: 'lead', line: { project: 'CUL', item: 'Extension Cord', qty: 1, name: 'Maria Santos', borrowedAt: d(-9), due: d(-2), days: 2 } }
+  ], [{ title: 'Sunscreen', qty: 13, unit: 'pcs', days: 6, expiry: d(6), where: 'Rack (Top Shelf)' }]);
+  MailApp.sendEmail({ to: me, subject: '[Sample] ' + mail.subject, body: mail.text, htmlBody: mail.html, name: 'Celadon Inventory' });
+  notify_('Sample reminder sent to ' + me + '.');
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -1400,7 +1539,7 @@ function setupSheets() {
     .map(function (src) { return src.tab; });
   if (missing.indexOf('Inventory') !== -1) throw new Error('This spreadsheet has no Inventory tab. Open the script from the Celadon Inventory Tracker sheet.');
 
-  var tabs = [CELA.ACCESS, CELA.PROJECTS, CELA.REQUESTS];
+  var tabs = [CELA.OFFICERS, CELA.PROJECTS, CELA.REQUESTS];
   if (!prop_('MEMBERS_SPREADSHEET_ID')) tabs.unshift(CELA.MEMBERS);
   tabs.forEach(ensureSheet_);
 
@@ -1412,8 +1551,8 @@ function setupSheets() {
   }
   projects.getRange('C2:C').setNumberFormat('mmm d, yyyy');
 
-  validateColumn_(CELA.ACCESS, COLS.level, SpreadsheetApp.newDataValidation()
-    .requireValueInList(['ADMIN', 'OFFICER'], true).build());
+  validateColumn_(CELA.OFFICERS, ['Role'], SpreadsheetApp.newDataValidation()
+    .requireValueInList(CELA.OFFICER_ROLES, true).build());
 
   var requests = sheet_(CELA.REQUESTS);
   var rt = requestsTable_();
@@ -1429,7 +1568,7 @@ function setupSheets() {
     notify_('Heads up: this script\'s time zone is ' + Session.getScriptTimeZone() + '. Set it to (GMT+08:00) Manila in Project Settings so due dates land on the right day.');
   }
   notify_('App tabs are ready (' + tabs.concat(CELA.BORROWED).join(', ') + '). ' +
-    'Item tabs now have an Item ID column, and Inventory has Currently Borrowed after Qty. Next: add officers (ACCESS).');
+    'Item tabs now have an Item ID column, and Inventory has Currently Borrowed after Qty. Next: fill in OFFICERS (VPs and Project Managers get the reminder emails).');
 }
 
 function ensureSheet_(name) {

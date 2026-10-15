@@ -14,7 +14,7 @@ Adapted from MEA's app ([David-GY/mea-id](https://github.com/David-GY/mea-id)). 
 | Branding | Dark teal, Plus Jakarta Sans, MEA/SUS logos | Celadon navy `#003078` + orange `#f09b43`, Montserrat, Celadon mark (from ateneoceladon.com) |
 | Requests | Borrow/consume/return left as cell comments | Logged as rows in `REQUESTS` with due dates. "Use up" deducts the quantity, and "Mark returned" clears a borrow |
 | What's out | Read the comments | `BORROWED_NOW` tab + Borrowed-now screen + "N out" on items |
-| Overdue | None | Daily trigger: highlights overdue rows and emails a digest (and optionally borrowers) |
+| Overdue | None | Daily trigger: highlights overdue rows; emails the borrower + dept VP (department borrows) or the project's PMs (project borrows), using the OFFICERS tab |
 | Storage areas | Free text | The Inventory tab's own Storage Area dropdown |
 | Adding items | Edit the sheet | **Add to inventory** form (dropdowns read from the sheet) and **Add stock** at checkout |
 | Returns | One at a time | Home box grouped by borrower with select-all; one request for the whole batch |
