@@ -7,7 +7,8 @@ Takes about 15 minutes. You need edit access to the **'26-'27 Inventory Tracker*
 1. Log in with your 6-digit Ateneo ID. Only IDs in the member list can log in.
 2. Pick the **project or department** you're borrowing or using items for. Every borrow or use-up is logged under one, never personally. Anyone can pick any of them; it starts on your own department.
 3. Find items in **CelaCart** (everything in Inventory, Celamerch and Consumables), then check out as **Borrow**, **Use up**, or **Return**.
-4. **Borrowed now** lists what's out, with overdue items in red. Anyone can tap **Mark returned** when an item comes back; the sheet records who did.
+4. **Due dates:** a borrow is due the day after the project's **Event End Date** (PROJECTS tab), or 7 days after borrowing if there's no end date (`BORROW_DAYS`). Returns can be partial ("2 of 5 came back"), and a mistaken "Mark returned" can be undone for 48 hours.
+5. **Borrowed now** lists what's out, with overdue items in red. Anyone can tap **Mark returned** when an item comes back; the sheet records who did.
 5. On **Home**, the box under the picker lists everything still out for that project/department, grouped by who borrowed it. Tick items (or a whole person, or **Select all**), then **Confirm return**.
 6. **Add to inventory** (Home, or **+ Add item** in CelaCart) creates a new row in the Inventory tab, or in Consumables if it has an expiry date. To add more of something already listed, put it in the cart and choose **Add stock** at checkout.
 
@@ -23,6 +24,8 @@ Takes about 15 minutes. You need edit access to the **'26-'27 Inventory Tracker*
 **Item ID** (last column of Inventory, Consumables and Celamerch) is a permanent ID like `INV-0042` that the app uses to track borrows, so renaming, moving or sorting items is safe. Don't edit or copy these cells; the column has a warning if you try. Rows you add by hand get an ID automatically, and copy-pasted duplicate IDs are fixed the same way.
 
 **Currently Borrowed** (right after Qty in Inventory) is a live formula: units borrowed and not yet returned. **Qty** stays the total the org owns.
+
+**Adding something that already exists:** if the same item (same name, ignoring capitals/plurals) is added for the **same department**, it's merged into the existing row (Qty goes up) instead of creating a duplicate. A different department gets its own row. Expiring items merge only when the expiry date matches (same batch).
 
 The app only adds rows through **Add to inventory** (to the next empty row of Inventory or Consumables) and never deletes rows. Re-adding something marked *Used Up* brings its old row back instead of duplicating it.
 

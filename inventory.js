@@ -215,6 +215,9 @@
       try { json = JSON.parse(text); }
       catch (parseErr) { throw new Error('Script returned an unexpected response.'); }
 
+      if (json && !json.ok && json.retry) {
+        throw new Error('The inventory sheet is busy. It will try again shortly.'); // treated like a network blip
+      }
       if (!json || !json.ok) {
         const serverErr = new Error((json && json.error) ? json.error : 'Script reported an error.');
         serverErr.fromServer = true; // a real rejection (e.g. not allowed for that project), not a network blip
@@ -986,6 +989,52 @@
     renderActForSelects();
   }
 
+  async function resolvePartial(lineId, back, btn) {
+    if (btn) { btn.disabled = true; btn.innerHTML = BUSY_DOTS; }
+    try {
+      const token = getInventoryToken();
+      const res = await fetch(getInventoryScriptUrl() + '?action=resolve', {
+        method: 'POST',
+        headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+        body: JSON.stringify(Object.assign({ idNumber: state.lastId.idNumber, lineIds: [lineId], qtys: { [lineId]: back } }, token ? { token } : {}))
+      });
+      const json = await res.json();
+      if (!json || !json.ok) throw new Error((json && json.error) || 'Could not mark returned');
+      showToast(back + ' marked returned; the rest is still out');
+      refreshAfterReturn();
+    } catch(err) {
+      showToast(err.message, true);
+      if (btn) { btn.disabled = false; btn.textContent = 'Mark returned'; }
+    }
+  }
+
+  // A "Mark returned" can be undone for 48 hours (not partial-return lines).
+  function canUndoReturn(r) {
+    return r.caseType === 'BORROWING' && r.resolved && r.status === 'Returned' && r.resolvedAt &&
+      !/-R[0-9a-f]{4}$/.test(r.lineId) && (Date.now() - new Date(r.resolvedAt)) < 48 * 3600000;
+  }
+
+  document.addEventListener('click', async e => {
+    const b = e.target.closest('[data-unresolve]');
+    if (!b || !canReachBackend()) return;
+    b.disabled = true; b.innerHTML = BUSY_DOTS;
+    try {
+      const token = getInventoryToken();
+      const res = await fetch(getInventoryScriptUrl() + '?action=unresolve', {
+        method: 'POST',
+        headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+        body: JSON.stringify(Object.assign({ idNumber: state.lastId.idNumber, lineId: b.dataset.unresolve }, token ? { token } : {}))
+      });
+      const json = await res.json();
+      if (!json || !json.ok) throw new Error((json && json.error) || 'Could not undo');
+      showToast('Undone: it\'s back on the not-returned list');
+      refreshAfterReturn();
+    } catch(err) {
+      showToast(err.message, true);
+      b.disabled = false; b.textContent = 'Undo';
+    }
+  });
+
   // One resolve call to the backend. Throws with the server's message.
   async function postResolve(lineId) {
     const url = getInventoryScriptUrl();
@@ -1015,6 +1064,14 @@
 
   async function resolveLine(lineId, btn) {
     if (!canReachBackend()) return;
+    const rec = (dashState.records || []).concat((getCachedHistory() || {}).records || []).find(r => r.lineId === lineId);
+    const n = rec ? parseInt(rec.qty, 10) || 1 : 1;
+    if (n > 1) {
+      const answer = prompt(`How many of the ${n} ${rec.item} came back?`, String(n));
+      if (answer === null) return;
+      const back = Math.min(n, Math.max(1, parseInt(answer, 10) || n));
+      if (back < n) return resolvePartial(lineId, back, btn);
+    }
     if (btn) { btn.disabled = true; btn.textContent = 'Saving…'; }
     try {
       await postResolve(lineId);
@@ -1124,11 +1181,18 @@
       if (n > 9999) return 'That looks too high. Max 9999.';
       return '';
     },
-    'add-unit': v => (v && !/^[\p{L} .\/-]+$/u.test(v) ? 'Use a word like pcs, packs or sets.' : ''),
+    'add-unit': v => {
+      if (v && !/^[\p{L} .\/-]+$/u.test(v)) return 'Use a word like pcs, packs or sets.';
+      const t = addMergeTarget();
+      const unitKey = u => { const k = String(u || '').toLowerCase().replace(/[^\p{L}]/gu, ''); return /^(pc|pcs|piece|pieces)$/.test(k) ? 'pc' : k.replace(/(es|s)$/, ''); };
+      if (t && v && t.unit && unitKey(v) !== unitKey(t.unit)) return `${t.title} is counted in ${t.unit}. Use ${t.unit}, or a different name if it's a different item.`;
+      return '';
+    },
     'add-dept': v => (v ? '' : 'Choose the department that owns it.'),
-    'add-type': v => (v ? '' : 'Choose a type so people can find it.'),
-    'add-category': v => (v ? '' : 'Equipment comes back; Supplies get used up.'),
+    'add-type': v => (v || addMergeTarget() ? '' : 'Choose a type so people can find it.'),
+    'add-category': v => (v || addMergeTarget() ? '' : 'Equipment comes back; Supplies get used up.'),
     'add-storage': () => {
+      if (addMergeTarget() && document.getElementById('add-storage').value !== NEW_LOCATION) return '';
       const sel = document.getElementById('add-storage').value;
       const spot = document.getElementById('add-spot').value.trim();
       if (sel === NEW_LOCATION) {
@@ -1160,20 +1224,52 @@
     return msg;
   }
 
+  // Same rules as the script: "Scissor"/"scissors", box/boxes are the same item.
+  function sameItemName(a, b) {
+    const k = v => String(v || '').toLowerCase().replace(/[^\p{L}\p{N}]/gu, '');
+    const x = k(a), y = k(b);
+    return !!x && (x === y || x + 's' === y || y + 's' === x || x + 'es' === y || y + 'es' === x);
+  }
+
+  // The existing row this entry would merge into (same item + same
+  // department; for expiring items the script also checks the batch date).
+  function addMergeTarget() {
+    const title = document.getElementById('add-title').value.trim();
+    const dept = document.getElementById('add-dept').value;
+    const expires = document.getElementById('add-expires').checked;
+    if (title.length < 2 || !dept || expires) return null;
+    return state.inventory.find(i => i.source === 'inventory' && sameItemName(i.title, title) && sameName(i.category, dept)) || null;
+  }
+
   // Warn while typing if this exact item already exists, and offer Add stock.
   function checkDuplicate() {
     const hint = document.getElementById('dup-add-title');
+    const btn = document.getElementById('add-submit');
     const title = document.getElementById('add-title').value.trim();
     const dept = document.getElementById('add-dept').value;
     hint.innerHTML = '';
+    hint.className = 'field-hint';
+    const target = addMergeTarget();
+    if (target) {
+      const qtyText = document.getElementById('add-qty').value.trim();
+      const cur = target.qtyRaw;
+      const sum = /^\d+$/.test(qtyText) && /^\d+$/.test(String(cur)) ? Number(cur) + Number(qtyText) : null;
+      hint.className = 'field-hint merge';
+      hint.innerHTML = `<b>Already in ${escapeHtml(target.category)}'s inventory:</b> ${escapeHtml(target.title)}, ${escapeHtml(target.qtyDisplay)}` +
+        `${target.location ? ' at ' + escapeHtml(target.location) : ''}. ` +
+        (sum != null ? `Adding will merge it: ${cur} + ${qtyText} = <b>${sum}</b>.` : (String(cur) === '*' ? 'Adding will keep it as "a lot".' : 'Adding will merge it into that row.'));
+      btn.textContent = 'ADD TO EXISTING ITEM';
+      ['add-type', 'add-category', 'add-storage'].forEach(id => { const e = document.getElementById('err-' + id); if (e) e.textContent = ''; document.getElementById(id).removeAttribute('aria-invalid'); });
+      return;
+    }
+    btn.textContent = 'ADD TO INVENTORY';
     if (title.length < 2) return;
-    const same = state.inventory.filter(i => sameName(i.title, title));
-    if (!same.length) return;
-    const exact = same.find(i => !dept || sameName(i.category, dept));
-    const item = exact || same[0];
-    hint.innerHTML = `Already listed: <b>${escapeHtml(item.title)}</b> (${escapeHtml(item.category)}${item.location ? ', ' + escapeHtml(item.location) : ''}). ` +
-      `<button type="button" class="text-link" data-open-item="${escapeHtml(item.id)}">Add stock to it instead</button>`;
+    const other = state.inventory.find(i => sameItemName(i.title, title));
+    if (other && dept && !sameName(other.category, dept)) {
+      hint.innerHTML = `${escapeHtml(other.category)} also has ${escapeHtml(other.title)}. This will be a separate ${escapeHtml(dept)} item.`;
+    }
   }
+
 
   function bindAddForm() {
     const form = document.getElementById('add-form');
@@ -1197,8 +1293,8 @@
     ['add-storage-new', 'add-spot'].forEach(id => document.getElementById(id).addEventListener('input', () => {
       if (document.getElementById('add-storage').getAttribute('aria-invalid') === 'true') checkAddField('add-storage', true);
     }));
-    document.getElementById('add-title').addEventListener('input', checkDuplicate);
-    document.getElementById('add-dept').addEventListener('change', checkDuplicate);
+    ['add-title', 'add-qty'].forEach(id => document.getElementById(id).addEventListener('input', checkDuplicate));
+    ['add-dept', 'add-expires'].forEach(id => document.getElementById(id).addEventListener('change', checkDuplicate));
     document.getElementById('dup-add-title').addEventListener('click', e => {
       const b = e.target.closest('[data-open-item]');
       if (!b) return;
@@ -1251,7 +1347,9 @@
       });
       const json = await res.json();
       if (!json || !json.ok) throw new Error((json && json.error) || 'Could not add the item');
-      showToast(json.revived ? payload.title + ' is back in the inventory' : payload.title + ' added' + (json.tab === 'Consumables' ? ' to Consumables' : ''));
+      showToast(json.merged
+        ? `Added to ${json.title}${json.location ? ' (' + json.location + ')' : ''}: now ${json.total === '*' ? 'a lot' : json.total}`
+        : payload.title + ' added' + (json.tab === 'Consumables' ? ' to Consumables' : ''));
       if (storageSel === NEW_LOCATION) {
         // The new location is now in the sheet's dropdown; refresh our copy.
         try { localStorage.removeItem(ADD_OPTIONS_KEY); } catch(e) {}
@@ -1261,8 +1359,10 @@
       document.getElementById('add-expiry-wrap').style.display = 'none';
       document.getElementById('add-storage-new-wrap').style.display = 'none';
       document.getElementById('dup-add-title').innerHTML = '';
+      btn.textContent = 'ADD TO INVENTORY';
       document.querySelectorAll('#add-form [aria-invalid]').forEach(el => el.removeAttribute('aria-invalid'));
-      // Show the new item in the catalog.
+      // Show the item in the catalog (the existing row's name when merged).
+      if (json.merged && json.title) payload.title = json.title;
       state.catalogSearch = payload.title;
       state.catalogCategory = 'all';
       state.catalogDept = 'all';
@@ -1274,7 +1374,8 @@
       err.textContent = e2.message;
     } finally {
       addingItem = false;
-      btn.disabled = false; btn.textContent = 'ADD TO INVENTORY';
+      btn.disabled = false;
+      checkDuplicate(); // puts back the right button label (merge vs new)
     }
   }
 
@@ -1425,6 +1526,7 @@
           <span class="dash-row-title">${escapeHtml(r.item)}${r.qty ? ' × ' + escapeHtml(r.qty) : ''}</span>
           <span class="dash-row-meta">Borrowed by ${escapeHtml(r.name || '—')} · ${shortDate(r.time)}${r.resolvedBy ? ' · returned by ' + escapeHtml(r.resolvedBy) : ''}</span>
         </span>
+        ${canUndoReturn(r) ? `<button type="button" class="text-link undo-return" data-unresolve="${escapeHtml(r.lineId)}">Undo</button>` : ''}
       </div>`).join('');
 
     document.getElementById('proj-dash-list').innerHTML = offlineNote +
@@ -1488,11 +1590,18 @@
     if (!out.length) { actions.innerHTML = ''; return; }
     if (dashState.confirming && n) {
       const picked = out.filter(r => dashState.selected.has(r.lineId));
-      const names = picked.slice(0, 6).map(r => escapeHtml(r.item) + (r.qty ? ' × ' + escapeHtml(r.qty) : '') + ` <span class="dash-confirm-who">(${escapeHtml(r.name || '—')})</span>`);
-      if (picked.length > 6) names.push(`…and ${picked.length - 6} more`);
+      // Lines with more than one unit get a "how many came back?" box.
+      const names = picked.slice(0, 8).map(r => {
+        const n = parseInt(r.qty, 10) || 1;
+        const who = ` <span class="dash-confirm-who">(${escapeHtml(r.name || '—')})</span>`;
+        if (n <= 1) return escapeHtml(r.item) + who;
+        return `<span class="partial-row">${escapeHtml(r.item)}${who}<span class="partial-qty"><input type="number" min="1" max="${n}" value="${n}" data-partial="${escapeHtml(r.lineId)}" aria-label="How many ${escapeHtml(r.item)} came back"> of ${n}</span></span>`;
+      });
+      if (picked.length > 8) names.push(`…and ${picked.length - 8} more (all units)`);
       actions.innerHTML = `
         <div class="dash-confirm" role="alertdialog" aria-label="Confirm return">
           <div class="dash-confirm-q">Are these back in the org room?</div>
+          <div class="dash-confirm-tip">Only some came back? Change the number; the rest stays out.</div>
           <div class="dash-confirm-list">${names.join('<br>')}</div>
           <div class="dash-confirm-btns">
             <button type="button" class="btn-secondary" id="dash-cancel">Not yet</button>
@@ -1500,14 +1609,21 @@
           </div>
         </div>`;
       document.getElementById('dash-cancel').addEventListener('click', () => { dashState.confirming = false; renderDashActions(out); });
-      document.getElementById('dash-yes').addEventListener('click', () => confirmDashReturn(out));
+      document.getElementById('dash-yes').addEventListener('click', () => {
+        const qtys = {};
+        actions.querySelectorAll('[data-partial]').forEach(inp => {
+          const max = Number(inp.max), v = Math.min(max, Math.max(1, parseInt(inp.value, 10) || max));
+          if (v < max) qtys[inp.dataset.partial] = v;
+        });
+        confirmDashReturn(out, qtys);
+      });
       return;
     }
     actions.innerHTML = `<button type="button" class="btn-primary dash-return-btn" id="dash-return" ${n && !dashState.busy ? '' : 'disabled'}>${n ? 'Confirm return (' + n + ')' : 'Tick items that came back'}</button>`;
     document.getElementById('dash-return').addEventListener('click', () => { dashState.confirming = true; renderDashActions(out); });
   }
 
-  async function confirmDashReturn(out) {
+  async function confirmDashReturn(out, qtys) {
     if (!canReachBackend()) return;
     const ids = out.map(r => r.lineId).filter(id => dashState.selected.has(id));
     dashState.busy = true;
@@ -1522,7 +1638,7 @@
       const res = await fetch(getInventoryScriptUrl() + '?action=resolve', {
         method: 'POST',
         headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-        body: JSON.stringify(Object.assign({ idNumber: state.lastId.idNumber, lineIds: ids }, token ? { token } : {}))
+        body: JSON.stringify(Object.assign({ idNumber: state.lastId.idNumber, lineIds: ids, qtys: qtys || {} }, token ? { token } : {}))
       });
       const json = await res.json();
       if (!json || !json.ok) throw new Error((json && json.error) || 'Could not mark returned');

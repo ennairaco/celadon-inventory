@@ -51,6 +51,7 @@
  *                            (default: emails in ACCESS)
  *   EMAIL_BORROWERS          'true' to also email each borrower
  *   HISTORY_DAYS             finished lines older than this aren't sent to the app (default 180)
+ *   UNDO_HOURS               how long a "Mark returned" can be undone from the app (default 48)
  */
 
 var CELA = {
@@ -150,7 +151,7 @@ function doPost(e) {
 }
 
 // Actions that change the sheet must come as POST (not a shareable GET link).
-var WRITE_ACTIONS = ['submitOrder', 'resolve', 'addItem'];
+var WRITE_ACTIONS = ['submitOrder', 'resolve', 'unresolve', 'addItem'];
 
 function route_(e, body) {
   var p = mergeParams_(e, body);
@@ -176,6 +177,9 @@ function route_(e, body) {
       case 'resolve':
         requireToken_(p);
         return respond_(resolve_(p));
+      case 'unresolve':
+        requireToken_(p);
+        return respond_(unresolve_(p));
       case 'options':
         return respond_(options_());
       case 'addItem':
@@ -185,7 +189,11 @@ function route_(e, body) {
         return respond_({ ok: false, error: 'Unknown action. Use login, inventory, projects, history, submitOrder, resolve, options, or addItem.' });
     }
   } catch (err) {
-    return respond_({ ok: false, error: String(err && err.message || err) });
+    var msg = String(err && err.message || err);
+    // Google being busy (lock wait, rate limit, service hiccup): the app
+    // should simply try again later instead of counting it as a failure.
+    var retry = /lock|timed out|too many|try again later|service (error|unavailable)|internal error/i.test(msg);
+    return respond_({ ok: false, error: msg, retry: retry });
   }
 }
 
@@ -373,7 +381,7 @@ function submitOrder_(p) {
       } else if (caseType === 'RETURNING') {
         syncOutStatus_(x.entry, out[x.ref] || 0);
       } else if (caseType === 'RESTOCKING') {
-        addQty_(x.entry, x.qty);
+        addQty_(x.entry, x.qty, warnings);
       }
     });
     return { ok: true, logged: rows.length, requestId: requestId, due: iso_(due), warnings: warnings };
@@ -393,6 +401,8 @@ function resolve_(p) {
   var wanted = (Array.isArray(p.lineIds) ? p.lineIds : [p.lineId])
     .map(function (x) { return String(x || '').trim(); }).filter(String);
   if (!wanted.length) throw new Error('Missing line ID');
+  // Optional partial returns: { lineId: how many came back }.
+  var partial = p.qtys && typeof p.qtys === 'object' ? p.qtys : {};
 
   var lock = LockService.getScriptLock();
   lock.waitLock(20000);
@@ -405,7 +415,24 @@ function resolve_(p) {
       var lineId = String(r[c('Line ID')]);
       if (wanted.indexOf(lineId) === -1) return;
       if (String(r[c('Status')]) !== CELA.STATUS.PENDING) { already.push(lineId); return; }
-      markReturned_(t.sheet, t.headerRow + 2 + i, c, member.name, now);
+      var lent = parseInt(r[c('Qty')], 10) || 0;
+      var back = parseInt(partial[lineId], 10);
+      if (back > 0 && back < lent) {
+        // Some came back: the borrow keeps the rest, and a Returned line
+        // records what came back.
+        t.sheet.getRange(t.headerRow + 2 + i, c('Qty') + 1).setValue(lent - back);
+        var copy = r.slice();
+        copy[c('Line ID')] = lineId + '-R' + Utilities.getUuid().slice(0, 4);
+        copy[c('Qty')] = back;
+        copy[c('Status')] = CELA.STATUS.RETURNED;
+        copy[c('Resolved At')] = now;
+        copy[c('Resolved By')] = member.name;
+        copy[c('Last Reminded')] = '';
+        copy[c('ID Number')] = "'" + normalize_(copy[c('ID Number')]);
+        t.sheet.getRange(t.sheet.getLastRow() + 1, 1, 1, copy.length).setValues([copy]);
+      } else {
+        markReturned_(t.sheet, t.headerRow + 2 + i, c, member.name, now);
+      }
       resolved.push(lineId);
       touched.push({ ref: String(r[c('Item Ref')] || ''), title: String(r[c('Item')]), where: String(r[c('Storage Area')]) });
     });
@@ -430,12 +457,46 @@ function resolve_(p) {
   }
 }
 
+// Undo a "Mark returned" done by mistake (within UNDO_HOURS, default 48).
+// Partial-return lines can't be undone this way; fix those in the sheet.
+function unresolve_(p) {
+  var id = normalize_(p.idNumber);
+  var member = findMember_(id);
+  if (!member) throw new Error('ID ' + id + ' is not in the member list');
+  var lineId = String(p.lineId || '').trim();
+  var hours = parseInt(prop_('UNDO_HOURS'), 10) || 48;
+  var lock = LockService.getScriptLock();
+  lock.waitLock(20000);
+  try {
+    var t = requestsTable_();
+    var c = function (h) { return t.index[key_(h)]; };
+    for (var i = 0; i < t.rows.length; i++) {
+      var r = t.rows[i];
+      if (String(r[c('Line ID')]) !== lineId) continue;
+      if (String(r[c('Status')]) !== CELA.STATUS.RETURNED || String(r[c('Case')]).toUpperCase() !== 'BORROWING') {
+        throw new Error('Only a returned borrow can be undone');
+      }
+      if (/-R[0-9a-f]{4}$/.test(lineId)) throw new Error('This was a partial return; fix it in the REQUESTS tab');
+      var at = r[c('Resolved At')];
+      if (!(at instanceof Date) || (new Date() - at) > hours * 3600000) throw new Error('Too late to undo here; ask an officer to fix it in the sheet');
+      var rowNum = t.headerRow + 2 + i;
+      t.sheet.getRange(rowNum, c('Status') + 1).setValue(CELA.STATUS.PENDING);
+      t.sheet.getRange(rowNum, c('Resolved At') + 1).setValue('');
+      t.sheet.getRange(rowNum, c('Resolved By') + 1).setValue('');
+      var entry = findEntry_(catalogEntries_(true), String(r[c('Item Ref')] || ''), String(r[c('Item')]), String(r[c('Storage Area')]));
+      if (entry) syncOutStatus_(entry, outByRef_()[entry.ref] || 0);
+      return { ok: true, lineId: lineId };
+    }
+    throw new Error('Request line not found: ' + lineId);
+  } finally {
+    lock.releaseLock();
+  }
+}
+
 // ═══════════════════════════════════════════════════════════════════════
 // Catalog (Inventory, Consumables, Celamerch)
 // ═══════════════════════════════════════════════════════════════════════
 
-// Every listable item row across the item tabs. `ref` identifies a row by
-// its content (not its row number) so sorting/filtering the sheet is safe.
 // Every listable item row across the item tabs. `ref` is the row's
 // permanent Item ID (e.g. INV-0042) once setupSheets has added that column;
 // before that it falls back to a content key (tab + item + dept + spot).
@@ -610,7 +671,36 @@ function ensureItemColumns_() {
       } catch (e) { /* protection is a nicety */ }
     }
   });
+  protectAppAreas_();
   assignItemIds_();
+}
+
+// Warning-only protection: people can still edit, but get a "this is managed
+// by the inventory app" prompt first. Covers item-tab header rows, the
+// Currently Borrowed column and the REQUESTS log.
+function protectAppAreas_() {
+  var warn = function (range, what) {
+    try {
+      var existing = range.getSheet().getProtections(SpreadsheetApp.ProtectionType.RANGE)
+        .some(function (pr) { return pr.getDescription() === what; });
+      if (!existing) range.protect().setDescription(what).setWarningOnly(true);
+    } catch (e) { /* protection is a nicety */ }
+  };
+  CELA.SOURCES.forEach(function (src) {
+    var sheet = sheet_(src.tab, false);
+    if (!sheet) return;
+    var t = tableFromSheet_(sheet, src.anchor);
+    warn(sheet.getRange(t.headerRow + 1, 1, 1, sheet.getLastColumn()), 'Column headers (' + src.tab + ', Celadon Inventory app)');
+    var b = colFor_(t, COLS.borrowed);
+    if (b != null) warn(sheet.getRange(t.headerRow + 2, b + 1, Math.max(sheet.getMaxRows() - t.headerRow - 1, 1), 1), 'Currently Borrowed formulas (Celadon Inventory app)');
+  });
+  var req = sheet_(CELA.REQUESTS, false);
+  if (req) {
+    try {
+      var has = req.getProtections(SpreadsheetApp.ProtectionType.SHEET).length > 0;
+      if (!has) req.protect().setDescription('Request log (Celadon Inventory app)').setWarningOnly(true);
+    } catch (e) {}
+  }
 }
 
 function itemEntry_(t, r) {
@@ -671,7 +761,28 @@ function findEntry_(entries, ref, title, location) {
 
 function entryRange_(e, candidates) {
   var col = colFor_(e.t, candidates);
-  return col == null ? null : e.t.sheet.getRange(e.t.headerRow + 2 + e.i, col + 1);
+  return col == null ? null : e.t.sheet.getRange(entryRow_(e), col + 1);
+}
+
+// The sheet row of an entry, double-checked against its Item ID right before
+// writing: if someone sorted or inserted rows since it was read, find the ID
+// again instead of writing into whatever row now sits there.
+function entryRow_(e) {
+  var row = e.t.headerRow + 2 + e.i;
+  var idCol = colFor_(e.t, COLS.itemId);
+  if (!e.id || idCol == null || e.verified) return row;
+  var sheet = e.t.sheet;
+  if (normalize_(sheet.getRange(row, idCol + 1).getValue()) !== e.id) {
+    var height = Math.max(sheet.getLastRow() - e.t.headerRow - 1, 1);
+    var ids = sheet.getRange(e.t.headerRow + 2, idCol + 1, height, 1).getValues();
+    var k = -1;
+    for (var n = 0; n < ids.length; n++) { if (normalize_(ids[n][0]) === e.id) { k = n; break; } }
+    if (k === -1) throw new Error(e.title + ' (' + e.id + ') was moved or deleted in the sheet while saving. Please try again.');
+    e.i = k;
+    row = e.t.headerRow + 2 + k;
+  }
+  e.verified = true;
+  return row;
 }
 
 function annotateQty_(e, line) {
@@ -685,7 +796,10 @@ function deductQty_(e, qty, warnings) {
   var range = entryRange_(e, COLS.qty);
   if (!range) return;
   var current = range.getValue();
-  if (typeof current !== 'number' && !/^\d+$/.test(String(current).trim())) return; // "*", "many" etc.
+  if (typeof current !== 'number' && !/^\d+$/.test(String(current).trim())) {
+    if (String(current).trim() !== '*' && warnings) warnings.push(e.title + ': Qty in the sheet is "' + current + '" (not a plain number), so it wasn\'t lowered. Please fix it in the sheet.');
+    return;
+  }
   // Over-asking was already reported by submitOrder_; just never go below 0.
   var next = Math.max(0, Number(current) - qty);
   range.setValue(next);
@@ -694,13 +808,15 @@ function deductQty_(e, qty, warnings) {
 
 // Restock: raise a numeric (or blank) Qty; "*"/"many" stay as they are.
 // A Used Up row comes back into storage.
-function addQty_(e, qty) {
+function addQty_(e, qty, warnings) {
   var range = entryRange_(e, COLS.qty);
   if (!range) return;
   var current = range.getValue();
   var text = String(current).trim();
   if (text === '' || typeof current === 'number' || /^\d+$/.test(text)) {
     range.setValue((Number(current) || 0) + qty);
+  } else if (text !== '*' && warnings) {
+    warnings.push(e.title + ': Qty in the sheet is "' + current + '" (not a plain number), so it wasn\'t raised. Please fix it in the sheet.');
   }
   if (key_(e.status) === key_(CELA.ITEM_STATUS.USED_UP)) setStatus_(e, CELA.ITEM_STATUS.IN);
 }
@@ -719,6 +835,7 @@ function syncOutStatus_(e, outQty) {
   if (outQty > 0) {
     var allOut = !isNaN(total) && outQty >= total; // "*" or blank: never all out
     if (allOut && (status === '' || status === key_(CELA.ITEM_STATUS.IN))) setStatus_(e, CELA.ITEM_STATUS.OUT);
+    else if (!allOut && status === key_(CELA.ITEM_STATUS.OUT)) setStatus_(e, CELA.ITEM_STATUS.IN); // stock was added
   } else if (status === key_(CELA.ITEM_STATUS.OUT)) {
     setStatus_(e, CELA.ITEM_STATUS.IN);
   }
@@ -756,34 +873,22 @@ function addItem_(p) {
   var id = normalize_(p.idNumber);
   var member = findMember_(id);
   if (!member) throw new Error('ID ' + id + ' is not in the member list');
-  var v = validateNewItem_(p);
+  var v = validateNewItem_(p, true);
 
   var lock = LockService.getScriptLock();
   lock.waitLock(20000);
   try {
+    // Same item, same department (and same batch for expiring items)?
+    // Add to that row instead of creating a duplicate.
+    var target = findMergeTarget_(v);
+    if (target) return mergeIntoExisting_(target, v, member, id);
+    v = validateNewItem_(p, false); // a brand-new row needs every field
     var tabName = v.expiry && sheet_('Consumables', false) ? 'Consumables' : 'Inventory';
     var kind = tabName === 'Consumables' ? 'consumable' : 'inventory';
     var base = kind + ':' + [v.title, v.dept, v.storage, v.spot].map(key_).join('|');
     var now = new Date();
     var stamp = Utilities.formatDate(now, Session.getScriptTimeZone(), 'MMM d, yyyy');
     if (v.newStorage) addStorageOption_(v.storage);
-
-    var existing = catalogEntries_(true).filter(function (e) { return e.contentKey === base; })[0];
-    if (existing) {
-      if (CELA.HIDDEN_STATUSES.indexOf(key_(existing.status)) === -1) {
-        throw new Error(v.title + ' (' + v.dept + (v.storage || v.spot ? ', ' + (v.storage || v.spot) : '') + ') is already in the inventory. Use "Add stock" at checkout to add more.');
-      }
-      // Bring a used-up / returned row back instead of duplicating it.
-      [[COLS.qty, v.qty], [COLS.unit, v.unit], [COLS.type, v.type], [COLS.category, v.category], [COLS.event, v.event],
-        [COLS.notes, v.notes], [COLS.expiry, v.expiry]].forEach(function (pair) {
-        var range = entryRange_(existing, pair[0]);
-        if (range && pair[1] !== '' && pair[1] != null) range.setValue(pair[1]);
-      });
-      setStatus_(existing, CELA.ITEM_STATUS.IN);
-      annotateQty_(existing, '[ADDED] ' + v.qtyText + ' by ' + member.name + ' (' + stamp + ')');
-      logAdd_(member, id, v, existing.ref, now);
-      return { ok: true, ref: existing.ref, tab: tabName, revived: true };
-    }
 
     var sheet = sheet_(tabName);
     var t = tableFromSheet_(sheet, ['Item']);
@@ -829,7 +934,9 @@ function addItem_(p) {
 
 // Server-side checks for the Add form (the app checks the same things, but
 // the sheet must never rely on that).
-function validateNewItem_(p) {
+// strictNew === false/undefined → everything required for a brand-new row;
+// lenient (true) → only what a merge needs.
+function validateNewItem_(p, lenient) {
   var lists = options_().options;
   var text = function (v, max) { return String(v == null ? '' : v).replace(/\s+/g, ' ').trim().slice(0, max); };
   var inList = function (value, list, label, required) {
@@ -853,8 +960,8 @@ function validateNewItem_(p) {
   v.unit = safe_(text(p.unit, 15), 15);
   if (v.unit && !/^[\p{L} .\/-]+$/u.test(v.unit)) throw new Error('Unit should be a word like pcs, packs or sets');
   v.dept = inList(text(p.department, 40), lists.departments, 'department', true);
-  v.type = inList(text(p.type, 40), lists.types, 'type', true);
-  v.category = inList(text(p.category, 40), lists.categories, 'category', true);
+  v.type = inList(text(p.type, 40), lists.types, 'type', !lenient);
+  v.category = inList(text(p.category, 40), lists.categories, 'category', !lenient);
   v.event = inList(text(p.event, 60), lists.events, 'event', false);
   v.spot = safe_(text(p.spot, 80), 80);
   v.notes = safe_(text(p.notes, 300), 300);
@@ -870,7 +977,7 @@ function validateNewItem_(p) {
     }
   }
   v.storage = storage;
-  if (!v.storage && !v.spot) throw new Error('Add a storage area or a specific spot so people can find it');
+  if (!lenient && !v.storage && !v.spot) throw new Error('Add a storage area or a specific spot so people can find it');
   v.expiry = null;
   if (p.expiry) {
     var d = new Date(p.expiry);
@@ -883,6 +990,82 @@ function validateNewItem_(p) {
   }
   v.title = safe_(v.title, 80);
   return v;
+}
+
+// "Scissor" / "scissors" / "Scissors " are the same item; so are box / boxes.
+function sameItemName_(a, b) {
+  var x = key_(a), y = key_(b);
+  return !!x && (x === y || x + 's' === y || y + 's' === x || x + 'es' === y || y + 'es' === x);
+}
+
+function unitKey_(u) {
+  var k = key_(u);
+  if (/^(pc|pcs|piece|pieces)$/.test(k)) return 'pc';
+  return k.replace(/(es|s)$/, '');
+}
+
+function sameDay_(a, b) {
+  return a instanceof Date && b instanceof Date && startOfDay_(a).getTime() === startOfDay_(b).getTime();
+}
+
+// The row a new entry should merge into, if any: same item name + same
+// department in the same tab (Consumables: same expiry date too). Prefers a
+// row in the same spot, then one that's still listed.
+function findMergeTarget_(v) {
+  var kind = v.expiry && sheet_('Consumables', false) ? 'consumable' : 'inventory';
+  var matches = catalogEntries_(true).filter(function (e) {
+    return e.kind === kind && sameItemName_(e.title, v.title) && key_(e.category) === key_(v.dept) &&
+      (kind !== 'consumable' || sameDay_(e.expiry, v.expiry));
+  });
+  if (!matches.length) return null;
+  var hidden = function (e) { return CELA.HIDDEN_STATUSES.indexOf(key_(e.status)) !== -1; };
+  return matches.filter(function (e) {
+    return (v.storage && key_(e.storage) === key_(v.storage)) || (v.spot && key_(e.spot) === key_(v.spot));
+  })[0] || matches.filter(function (e) { return !hidden(e); })[0] || matches[0];
+}
+
+function mergeIntoExisting_(target, v, member, id) {
+  if (target.unit && v.unit && unitKey_(target.unit) !== unitKey_(v.unit)) {
+    throw new Error(target.title + ' (' + target.category + ') is already listed in ' + target.unit +
+      '. Enter the amount in ' + target.unit + ', or give it a different name if it\'s a different item.');
+  }
+  var now = new Date();
+  var stamp = Utilities.formatDate(now, Session.getScriptTimeZone(), 'MMM d, yyyy');
+  var revived = CELA.HIDDEN_STATUSES.indexOf(key_(target.status)) !== -1;
+  var qtyRange = entryRange_(target, COLS.qty);
+  var current = qtyRange ? qtyRange.getValue() : '';
+  var curText = String(current).trim();
+  var total;
+  if (revived || curText === '') total = v.qty;                         // used-up row starts over
+  else if (curText === '*' || v.qty === '*') total = '*';              // "a lot" stays "a lot"
+  else if (/^\d+$/.test(curText)) total = Number(curText) + v.qty;
+  else total = current;                                                 // free text like "2 boxes": leave it
+  if (qtyRange) qtyRange.setValue(total);
+
+  var set = function (cols, value) { var r = entryRange_(target, cols); if (r && value) r.setValue(value); };
+  if (!target.unit && v.unit) set(COLS.unit, v.unit);
+  if (!target.type && v.type) set(COLS.type, v.type);
+  if (!target.itemCategory && v.category) set(COLS.category, v.category);
+  if (!target.event && v.event) set(COLS.event, v.event);
+  if (v.newStorage) addStorageOption_(v.storage);
+  var notes = target.notes || '';
+  if (!target.storage && v.storage) set(COLS.storage, v.storage);
+  else if ((v.storage && key_(v.storage) !== key_(target.storage)) || (v.spot && key_(v.spot) !== key_(target.spot))) {
+    var where = [v.storage, v.spot].filter(String).join(', ');
+    if (notes.toLowerCase().indexOf(where.toLowerCase()) === -1) notes = (notes ? notes + ' · ' : '') + 'Also some at ' + where;
+  }
+  if (!target.spot && v.spot && !target.storage) set(COLS.spot, v.spot);
+  if (v.notes && notes.toLowerCase().indexOf(v.notes.toLowerCase()) === -1) notes = (notes ? notes + ' · ' : '') + v.notes;
+  if (notes !== (target.notes || '')) { var nr = entryRange_(target, COLS.notes); if (nr) nr.setValue(safe_(notes, 500)); }
+
+  if (revived) setStatus_(target, CELA.ITEM_STATUS.IN);
+  target.qty = String(total);
+  target.status = revived ? CELA.ITEM_STATUS.IN : target.status;
+  syncOutStatus_(target, outByRef_()[target.ref] || 0);
+  annotateQty_(target, '[ADDED] +' + v.qtyText + ' (merged) by ' + member.name + ' (' + stamp + ')');
+  logAdd_(member, id, v, target.ref, now);
+  return { ok: true, merged: true, revived: revived, ref: target.ref, title: target.title, total: total,
+    location: target.storage || target.spot, tab: target.kind === 'consumable' ? 'Consumables' : 'Inventory' };
 }
 
 // A new storage area typed in the Add form joins the Storage Area dropdown
@@ -1102,6 +1285,7 @@ function installDailyReminder() {
 // expired/expiring Consumables. Each overdue line is re-reminded at most
 // every REMIND_EVERY_DAYS days; expiring items are listed every day.
 function flagOverdue() {
+  try { assignItemIds_(); ensureBorrowedFormulas_(sheet_('Inventory')); } catch (e) { /* repairs are best-effort */ }
   var t = requestsTable_();
   var c = function (h) { return t.index[key_(h)]; };
   var now = new Date();

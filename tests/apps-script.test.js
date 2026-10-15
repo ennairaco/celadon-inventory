@@ -28,6 +28,7 @@ function mkSheet(name, data) {
     getMaxRows: () => 1000,
     getDataRange: () => ({ getValues: () => data.map(r => r.slice()) }),
     clear: () => { data.length = 0; },
+    getProtections: () => [],
     insertColumnAfter: n => { data.forEach(r => { while (r.length < n) r.push(''); r.splice(n, 0, ''); }); },
     r1c1: {},
     getRange: (r, c, nr, nc) => {
@@ -101,7 +102,7 @@ const ss = chain({
 const mail = [];
 const props = {};
 const g = {
-  SpreadsheetApp: chain({ getActiveSpreadsheet: () => ss, getUi: () => { throw new Error('no ui'); } }),
+  SpreadsheetApp: chain({ getActiveSpreadsheet: () => ss, getUi: () => { throw new Error('no ui'); }, ProtectionType: { RANGE: 'RANGE', SHEET: 'SHEET' } }),
   PropertiesService: { getScriptProperties: () => ({ getProperty: k => props[k] || null }) },
   LockService: { getScriptLock: () => ({ waitLock() {}, tryLock: () => true, releaseLock() {} }) },
   Utilities: { formatDate: () => 'x', getUuid: () => Math.random().toString(16).slice(2) + Date.now().toString(16) },
@@ -239,7 +240,25 @@ assert.ok(requests().some(x => x[col('Case')] === 'ADDING' && x[col('Item')] ===
 // Duplicates refused; bad qty refused; non-members refused
 const base = { idNumber: '212346', title: 'Tape', qty: '2', department: 'CUL', type: 'Office Supplies', category: 'Supplies', storage: 'Shelf' };
 const add = extra => post('addItem', Object.assign({}, base, extra));
-assert.match(add({ title: 'glitter glue', qty: '1', type: 'Art & Craft Supplies', spot: 'CUL Bag 1' }).error, /already in the inventory/);
+// Same item + same department -> merged into the existing row (no duplicate)
+const glitterRows = () => sheets.Inventory.data.filter(x => /^glitter glue$/i.test(x[IC('Item')])).length;
+r = add({ title: 'glitter glue', qty: '3', type: '', category: '', storage: '', spot: 'CUL Bag 1' });
+assert.ok(r.ok && r.merged && r.total === 15, 'merged 12 + 3: ' + JSON.stringify(r));
+assert.strictEqual(glitterRows(), 1, 'no duplicate row');
+// plural/singular counts as the same item; a different spot gets noted
+r = add({ title: 'Glitter Glues', qty: '2', type: '', category: '', storage: 'Metal Drawer (Top)', spot: '' });
+assert.ok(r.merged && r.total === 17, JSON.stringify(r));
+assert.match(invRow('Glitter Glue', 'CUL')[IC('Notes')], /Also some at Metal Drawer \(Top\)/);
+// different department -> its own row
+r = add({ title: 'Glitter Glue', qty: '5', department: 'HR', type: 'Art & Craft Supplies', category: 'Supplies', storage: 'Shelf' });
+assert.ok(r.ok && !r.merged && glitterRows() === 2, JSON.stringify(r));
+// different unit -> stopped
+assert.match(add({ title: 'Glitter Glue', qty: '2', unit: 'boxes', spot: 'CUL Bag 1' }).error, /already listed in pcs/);
+// "*" stays "a lot"
+r = add({ title: 'Pushpins', qty: '50', department: 'COMMPUB', type: '', category: '', storage: '', unit: '' });
+assert.ok(r.merged && r.total === '*', JSON.stringify(r));
+// a brand-new item still needs type/category/location
+assert.match(add({ title: 'Totally New Thing', type: '' }).error, /type/);
 assert.match(add({ qty: 'two' }).error, /whole number/);
 assert.match(add({ qty: '0' }).error, /between 1 and/);
 assert.match(add({ qty: '99999' }).error, /whole number|between/);
@@ -263,6 +282,15 @@ assert.strictEqual(glueRow[IC('Specific Spot')], "'+ box 2");
 r = add({ title: 'Banner Stand', type: 'Office Supplies', category: 'Supplies', storage: 'Locker 3' });
 assert.ok(r.ok, JSON.stringify(r));
 assert.strictEqual(sheets.Inventory.data[r.row - 1][IC('Storage Area')], 'Locker 3');
+
+// Expiring items: same batch (same date) merges, a different date is a new batch row
+const exp1 = new Date(today.getTime() + 60 * DAY).toISOString(), exp2 = new Date(today.getTime() + 90 * DAY).toISOString();
+const batchRows = () => sheets.Consumables.data.filter(x => x[1] === 'Wet Wipes').length;
+add({ title: 'Wet Wipes', qty: '3', unit: 'packs', department: 'HR', type: 'Toiletries & Hygiene', category: 'Supplies', storage: 'Shelf', expiry: exp1 });
+assert.ok(add({ title: 'Wet Wipes', qty: '2', unit: 'packs', department: 'HR', type: '', category: '', storage: '', expiry: exp1 }).merged);
+assert.strictEqual(batchRows(), 1);
+assert.ok(!add({ title: 'Wet Wipes', qty: '2', unit: 'packs', department: 'HR', type: 'Toiletries & Hygiene', category: 'Supplies', storage: 'Shelf', expiry: exp2 }).merged);
+assert.strictEqual(batchRows(), 2);
 
 // Expiry date → Consumables tab
 r = post('addItem', { idNumber: '212347', title: 'Hand Sanitizer', qty: '6', unit: 'bottles', department: 'HR', type: 'Toiletries & Hygiene', category: 'Supplies', storage: 'Shelf', expiry: new Date(today.getTime() + 60 * DAY).toISOString() });
@@ -341,6 +369,53 @@ get({ action: 'inventory' });
 assert.strictEqual(requests().find(x => x[col('Line ID')] === 'OLD-1')[col('Item Ref')], invRow('Tripods', 'COMMPUB')[IC('Item ID')]);
 requests().splice(requests().findIndex(x => x[col('Line ID')] === 'OLD-1'), 1);
 
+// ---- Edge cases: partial return, undo, moved rows, odd Qty, busy errors ----
+const curRef = (title, dept) => get({ action: 'inventory' }).items.find(x => x.title === title && x.category === dept).ref;
+r = post('submitOrder', { clientId: 'e1', idNumber: '212345', caseType: 'BORROWING', actingAs: 'COMMPUB', items: [{ ref: curRef('Tripods', 'COMMPUB'), title: 'Tripods', qty: 4 }] });
+let line = get({ action: 'history' }).records.find(x => x.item === 'Tripods' && !x.resolved && Number(x.qty) === 4);
+r = post('resolve', { idNumber: '212346', lineIds: [line.lineId], qtys: { [line.lineId]: 3 } });
+assert.ok(r.ok, JSON.stringify(r));
+let recs = get({ action: 'history' }).records;
+assert.strictEqual(Number(recs.find(x => x.lineId === line.lineId).qty), 1, 'partial: 1 still out');
+assert.ok(recs.find(x => x.lineId === line.lineId).resolved === false);
+assert.ok(recs.some(x => x.lineId.startsWith(line.lineId + '-R') && Number(x.qty) === 3 && x.resolved), 'partial: 3 logged as returned');
+// undo a mistaken "Mark returned"
+r = post('resolve', { idNumber: '212346', lineId: line.lineId });
+assert.ok(get({ action: 'history' }).records.find(x => x.lineId === line.lineId).resolved);
+r = post('unresolve', { idNumber: '212346', lineId: line.lineId });
+assert.ok(r.ok, JSON.stringify(r));
+assert.strictEqual(get({ action: 'history' }).records.find(x => x.lineId === line.lineId).resolved, false, 'undo puts it back out');
+assert.match(post('unresolve', { idNumber: '212346', lineId: recs.find(x => x.lineId.startsWith(line.lineId + '-R')).lineId }).error, /partial return/);
+post('resolve', { idNumber: '212346', lineId: line.lineId });
+// rows moved (someone sorted the sheet) -> the right row is still the one updated
+const tapeIdx = () => sheets.Inventory.data.findIndex(x => x[IC('Item')] === 'Masking Tape');
+const qtyBefore = sheets.Inventory.data[tapeIdx()][QTY];
+// Swap Masking Tape with the row above it right after the app reads the sheet.
+const realDataRange = sheets.Inventory.getDataRange;
+sheets.Inventory.getDataRange = () => {
+  const snap = realDataRange();
+  const ti = tapeIdx();
+  [sheets.Inventory.data[ti], sheets.Inventory.data[ti - 1]] = [sheets.Inventory.data[ti - 1], sheets.Inventory.data[ti]];
+  sheets.Inventory.getDataRange = realDataRange;
+  return snap;
+};
+r = post('submitOrder', { clientId: 'e2', idNumber: '212345', caseType: 'CONSUMING', actingAs: 'COMMPUB', items: [{ ref: curRef('Masking Tape', 'COMMPUB'), title: 'Masking Tape', qty: 1 }] });
+assert.ok(r.ok, JSON.stringify(r));
+assert.strictEqual(sheets.Inventory.data[tapeIdx()][QTY], qtyBefore - 1, 'the moved row was the one updated');
+// Qty that isn't a plain number -> warning instead of silent no-op
+const weird = sheets.Inventory.data.find(x => x[IC('Item')] === 'Tripods');
+const keepQty = weird[QTY]; weird[QTY] = '5pcs';
+r = post('submitOrder', { clientId: 'e3', idNumber: '212345', caseType: 'RESTOCKING', actingAs: 'COMMPUB', items: [{ ref: curRef('Tripods', 'COMMPUB'), title: 'Tripods', qty: 2 }] });
+assert.ok(r.warnings.some(w => /not a plain number/.test(w)), JSON.stringify(r));
+weird[QTY] = keepQty;
+// busy errors are marked retryable
+const realLock = g.LockService.getScriptLock;
+g.LockService.getScriptLock = () => ({ waitLock() { throw new Error('Lock timeout: another process was holding the lock for too long.'); }, tryLock: () => false, releaseLock() {} });
+r = post('submitOrder', { clientId: 'e4', idNumber: '212345', caseType: 'BORROWING', actingAs: 'COMMPUB', items: [{ ref: curRef('Tripods', 'COMMPUB'), title: 'Tripods', qty: 1 }] });
+assert.ok(!r.ok && r.retry === true, 'busy -> retry: ' + JSON.stringify(r));
+g.LockService.getScriptLock = realLock;
+assert.strictEqual(post('submitOrder', { idNumber: '000001', caseType: 'BORROWING', actingAs: 'COMMPUB', items: [{ ref: curRef('Tripods', 'COMMPUB'), title: 'Tripods', qty: 1 }] }).retry, false, 'real rejections are not retried');
+
 // ---- Review fixes ----
 // Writes must be POST
 assert.match(get({ action: 'submitOrder', idNumber: '212345', caseType: 'BORROWING' }).error, /Use POST/);
@@ -361,8 +436,8 @@ assert.strictEqual(invRow('Pushpins', 'COMMPUB')[STATUS], 'In Storage');
 r = add({ title: '红包', type: 'Office Supplies', category: 'Supplies', storage: 'Shelf' });
 assert.ok(r.ok, JSON.stringify(r));
 r = add({ title: '灯笼', type: 'Office Supplies', category: 'Supplies', storage: 'Shelf' });
-assert.ok(r.ok, 'a different Chinese name in the same spot is not a duplicate: ' + JSON.stringify(r));
-assert.match(add({ title: '灯笼', type: 'Office Supplies', category: 'Supplies', storage: 'Shelf' }).error, /already in the inventory/);
+assert.ok(r.ok && !r.merged, 'a different Chinese name is a new item: ' + JSON.stringify(r));
+assert.ok(add({ title: '灯笼', type: 'Office Supplies', category: 'Supplies', storage: 'Shelf' }).merged, 'same Chinese name merges');
 // History reports when a line was resolved
 assert.ok(get({ action: 'history' }).records.some(x => x.resolved && x.resolvedAt));
 // Committee text can't become a formula in REQUESTS
