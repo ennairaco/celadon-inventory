@@ -170,7 +170,10 @@ assert.match(post('submitOrder', { idNumber: '000001', caseType: 'BORROWING', ac
 // Borrow all 5 CUL scissors for MAF → Status Out; COMMPUB scissors untouched
 let r = post('submitOrder', { clientId: 'c1', idNumber: '212345', caseType: 'BORROWING', actingAs: 'Mid-Autumn Festival', items: [{ ref: cul.ref, title: 'Scissors', qty: 5 }] });
 assert.ok(r.ok && r.logged === 1, JSON.stringify(r));
-assert.strictEqual(Math.round((new Date(r.due) - new Date(today.getFullYear(), today.getMonth(), today.getDate())) / DAY), 4, 'due day after event');
+const evEnd = new Date(today.getFullYear(), today.getMonth(), today.getDate() + 3);
+const expectDue = new Date(evEnd); expectDue.setMonth(expectDue.getMonth() + 1);
+if (expectDue.getDate() !== evEnd.getDate()) expectDue.setDate(0);
+assert.strictEqual(new Date(r.due).toDateString(), expectDue.toDateString(), 'due one month after the event ends');
 assert.strictEqual(invRow('Scissors', 'CUL')[STATUS], 'Out');
 assert.strictEqual(invRow('Scissors', 'COMMPUB')[STATUS], 'In Storage');
 assert.strictEqual(post('submitOrder', { clientId: 'c1', idNumber: '212345', caseType: 'BORROWING', actingAs: 'Mid-Autumn Festival', items: [{ ref: cul.ref, title: 'Scissors', qty: 5 }] }).duplicate, true);
@@ -188,6 +191,17 @@ assert.strictEqual(renamed.title, 'Scissors (big)');
 assert.strictEqual(renamed.out, 5, 'borrow follows the ID after a rename');
 culScissorsRow[IC('Item')] = 'Scissors'; culScissorsRow[IC('Specific Spot')] = 'CUL MAF Box';
 assert.ok(requests().some(x => x[col('Item Ref')] === cul.ref), 'REQUESTS stores the ID');
+
+// Event ended 10 days ago -> still due one month after it ended; ended 2 months ago -> 7 days
+const glaRow = sheets.PROJECTS.data.findIndex(x => x[0] === 'General Assembly');
+sheets.PROJECTS.data[glaRow][2] = new Date(today.getTime() - 10 * DAY);
+r = post('submitOrder', { clientId: 'd1', idNumber: '212345', caseType: 'BORROWING', actingAs: 'General Assembly', items: [{ ref: find('Pushpins', 'COMMPUB').ref, title: 'Pushpins', qty: 1 }] });
+const d1 = new Date(r.due), want1 = new Date(today.getTime() - 10 * DAY); want1.setMonth(want1.getMonth() + 1);
+assert.ok(Math.abs(d1 - want1) < 2 * DAY, 'recently ended event: one month after the end date');
+sheets.PROJECTS.data[glaRow][2] = new Date(today.getTime() - 70 * DAY);
+r = post('submitOrder', { clientId: 'd2', idNumber: '212345', caseType: 'BORROWING', actingAs: 'General Assembly', items: [{ ref: find('Pushpins', 'COMMPUB').ref, title: 'Pushpins', qty: 1 }] });
+assert.ok(Math.abs(new Date(r.due) - today - 7 * DAY) < 60000, 'long-ended event: 7 days');
+sheets.PROJECTS.data[glaRow][2] = '';
 
 // Partial borrow keeps In Storage
 const tripods = find('Tripods', 'COMMPUB');

@@ -7,7 +7,7 @@ Takes about 15 minutes. You need edit access to the **'26-'27 Inventory Tracker*
 1. Log in with your 6-digit Ateneo ID. Only IDs in the member list can log in.
 2. Pick the **project or department** you're borrowing or using items for. Every borrow or use-up is logged under one, never personally. Anyone can pick any of them; it starts on your own department.
 3. Find items in **CelaCart** (everything in Inventory, Celamerch and Consumables), then check out as **Borrow**, **Use up**, or **Return**.
-4. **Due dates:** a borrow is due the day after the project's **Event End Date** (PROJECTS tab), or 7 days after borrowing if there's no end date (`BORROW_DAYS`). Returns can be partial ("2 of 5 came back"), and a mistaken "Mark returned" can be undone for 48 hours.
+4. **Due dates:** a project borrow is due **one month after the project's Event End Date** (PROJECTS tab). Department borrows, and projects with no end date, are due 7 days after borrowing (`BORROW_DAYS`). Returns can be partial ("2 of 5 came back"), and a mistaken "Mark returned" can be undone for 48 hours.
 5. **Borrowed now** lists what's out, with overdue items in red. Anyone can tap **Mark returned** when an item comes back; the sheet records who did.
 5. On **Home**, the box under the picker lists everything still out for that project/department, grouped by who borrowed it. Tick items (or a whole person, or **Select all**), then **Confirm return**.
 6. **Add to inventory** (Home, or **+ Add item** in CelaCart) creates a new row in the Inventory tab, or in Consumables if it has an expiry date. To add more of something already listed, put it in the cart and choose **Add stock** at checkout.
@@ -37,7 +37,7 @@ The app only adds rows through **Add to inventory** (to the next empty row of In
 4. Back in the sheet, fill in the new tabs:
    - **MEMBERS**: `ID Number | Name | Department | Position | Email`. Add yourself first so you can test. Later you can switch to the real members sheet instead (see below).
    - **ACCESS**: officers (`ADMIN` or `OFFICER`) and their email. They receive the daily email.
-   - **PROJECTS**: already filled with the 6 departments, General, and the 14 events (same names as the Inventory tab's Event column). Set **Event End Date** so project borrows fall due the day after the event. Untick **Active** to hide a project.
+   - **PROJECTS**: already filled with the departments and the 14 events (same names as the Inventory tab's Event column). Set **Event End Date** so project borrows fall due one month after the event. Untick **Active** to hide a project.
    - (No CORES tab needed: any member picks the project or department when borrowing.)
 5. Reload the sheet. A **Celadon Inventory** menu appears.
 

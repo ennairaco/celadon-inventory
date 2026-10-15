@@ -43,8 +43,9 @@
  *   MEMBERS_SPREADSHEET_ID   read members from another spreadsheet
  *   MEMBERS_SHEET_NAME       tab in that spreadsheet (default: first tab)
  *   DEDUCT_ON_CONSUME        'false' to stop "Use up" requests lowering Qty
- *   BORROW_DAYS              days a borrow may stay out when the project has
- *                            no Event End Date (default 7)
+ *   BORROW_DAYS              days a borrow may stay out when there's no project
+ *                            end date to go by (default 7). Project borrows are
+ *                            due one month after the project's Event End Date.
  *   REMIND_EVERY_DAYS        days between repeat overdue reminders (default 3)
  *   EXPIRY_WARN_DAYS         flag Consumables expiring within this many days (default 14)
  *   NOTIFY_EMAILS            comma-separated inbox(es) for the daily digest
@@ -1131,15 +1132,20 @@ function outByRef_() {
   return out;
 }
 
-// Due the day after the project's Event End Date when one is set and still
-// ahead; otherwise BORROW_DAYS (default 7) after borrowing.
+// Project borrows are due one month after the project's Event End Date
+// (end of that day), as long as that's still ahead. Departments, projects
+// with no end date, or borrows made after that window: BORROW_DAYS
+// (default 7) after borrowing.
 function dueDate_(project, now) {
   var days = parseInt(prop_('BORROW_DAYS'), 10) || 7;
   var match = projectTable_().filter(function (pr) { return key_(pr.name) === key_(project); })[0];
-  if (match && match.endDate instanceof Date && match.endDate >= startOfDay_(now)) {
+  if (match && match.endDate instanceof Date) {
     var due = startOfDay_(match.endDate);
-    due.setDate(due.getDate() + 1);
-    return due;
+    var day = due.getDate();
+    due.setMonth(due.getMonth() + 1);
+    if (due.getDate() !== day) due.setDate(0);  // Jan 31 + 1 month -> Feb 28/29, not Mar 3
+    due.setHours(23, 59, 59, 0);
+    if (due >= now) return due;
   }
   return new Date(now.getTime() + days * 86400000);
 }
