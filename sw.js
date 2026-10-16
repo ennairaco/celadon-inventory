@@ -3,7 +3,7 @@
 // Cache is only used as an offline fallback, never as the primary source.
 // Google Sheets (Apps Script) requests always go live, never cached.
 
-const CACHE_NAME = 'cela-app-v17'; // bump this string on any future SW change to force a clean cache
+const CACHE_NAME = 'cela-app-v18'; // bump this string on any future SW change to force a clean cache
 const APP_SHELL = [
   './',
   './index.html',

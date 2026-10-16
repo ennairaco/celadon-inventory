@@ -812,7 +812,7 @@
     "EXREL": ["#477d6a", "#355c4e", "#ebf3f0"],
     "FIN": ["#906a07", "#5f4605", "#f6f0e2"],
     "HR": ["#2a7d9d", "#1f5d75", "#e5eff3"],
-    "OSR": ["#783F1A", "#4e2911", "#efe8e4"],
+    "OSR": ["#7b3fb5", "#5a2c87", "#f1eaf8"],
     "Recruitment Week and Welcome Week": ["#aa5d19", "#7e4512", "#fbefe4"],
     "Celadon Merchandise": ["#0f766e", "#094944", "#e2efee"],
     "General Assembly": ["#1b3a6b", "#112442", "#e4e7ed"],
